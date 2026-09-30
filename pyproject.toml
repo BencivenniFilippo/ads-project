@@ -1,0 +1,17 @@
+[project]
+name = "ads-project"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "redis>=8.1.0",
+    "ruff>=0.16.9",
+]
+
+[project.scripts]
+ads-project = "ads_project:main"
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.13.0"]
+build-backend = "uv_build"
