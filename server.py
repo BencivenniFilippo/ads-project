@@ -8,5 +8,5 @@ class WordCountService(rpyc.Service):
 
 
 if __name__ == "__main__":
-    server = ThreadedServer(MyService, port=7777)
+    server = ThreadedServer(WordCountService, port=7777)
     server.start()
