@@ -1,0 +1,19 @@
+services:
+  server:
+    image: ads/server
+    build:
+      context: .
+      dockerfile: server.Dockerfile
+    environment:
+      RPC_PORT: "7777"
+
+  client:
+    image: ads/client
+    build:
+      context: .
+      dockerfile: client.Dockerfile
+    environment:
+      LOAD_BALANCER_HOST: "server"
+      LOAD_BALANCER_PORT: "7777"
+    depends_on:
+      - server
