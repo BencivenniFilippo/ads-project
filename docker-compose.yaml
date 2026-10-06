@@ -8,10 +8,9 @@ services:
       RPC_PORT: "7777"
       CACHE_HOST: "cache"
       CACHE_PORT: "6379"
+    depends_on:
+      - cache
 
-  cache:
-    image: redis:7
-      
   client:
     image: ads/client
     build:
@@ -22,3 +21,8 @@ services:
       LOAD_BALANCER_PORT: "7777"
     depends_on:
       - server
+
+  cache:
+    image: redis:latest
+    environment:
+      REDIS_ARGS: "--protected-mode no"
