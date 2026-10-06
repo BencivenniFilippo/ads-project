@@ -6,7 +6,12 @@ services:
       dockerfile: server.Dockerfile
     environment:
       RPC_PORT: "7777"
+      CACHE_HOST: "cache"
+      CACHE_PORT: "6379"
 
+  cache:
+    image: redis:7
+      
   client:
     image: ads/client
     build:
