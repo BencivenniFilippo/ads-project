@@ -14,7 +14,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(server_name)
 
-r = redis.Redis(host='cache', port=6379)
+r = redis.Redis(host=os.getenv("CACHE_HOST", "cache"), port=os.getenv("CACHE_PORT", "6379"))
 
 
 class WordCountService(rpyc.Service):
