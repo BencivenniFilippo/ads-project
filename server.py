@@ -17,6 +17,21 @@ logger = logging.getLogger(server_name)
 r = redis.Redis(host=os.getenv("CACHE_HOST", "cache"), port=os.getenv("CACHE_PORT", "6379"))
 
 
+def word_count(filename: str, target_word: str) -> int:
+    with open(filename, "r") as f:
+        text = f.readlines()
+
+        count = 0
+
+        for line in text:
+            clean_line = line.strip()
+            if clean_line:
+                for word in clean_line.split():
+                    if word.lower() == target_word:
+                        count += 1
+
+    return(count)
+
 class WordCountService(rpyc.Service):
     def exposed_word_count(self, file: str, word: str) -> int:
         word = word.lower()
@@ -29,13 +44,20 @@ class WordCountService(rpyc.Service):
         logger.debug("No value found in Redis")
 
         filepath = os.path.join(os.path.dirname(__file__), "Texts", file)
-        out = subprocess.check_output(f'grep -o -i "\\b{word}\\b" {filepath} | wc -l', shell=True)
+
+        out = word_count(filepath, word)
+        #out = subprocess.check_output(f'grep -o -i "\\b{word}\\b" {filepath} | wc -l', shell=True)
+
         try:
             count = int(out)
         except ValueError:
             return -1
         r.set(file + "/" + word, count)
         return count
+
+
+    def exposed_txt_file_list(self) -> list[str]:
+        return [file for file in os.listdir(os.path.join(os.path.dirname(__file__), "Texts")) if file.endswith(".txt")]
 
 
 if __name__ == "__main__":
