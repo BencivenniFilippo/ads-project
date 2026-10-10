@@ -59,6 +59,11 @@ class WordCountService(rpyc.Service):
     def exposed_txt_file_list(self) -> list[str]:
         return [file for file in os.listdir(os.path.join(os.path.dirname(__file__), "Texts")) if file.endswith(".txt")]
 
+    def exposed_read_file(self, file: str) -> str:
+        filepath = os.path.join(os.path.dirname(__file__), "Texts", file)
+        with open(filepath, "r") as f:
+            return f.read()
+
 
 if __name__ == "__main__":
     server = ThreadedServer(WordCountService, port=int(os.getenv('RPC_PORT', "7777")))
