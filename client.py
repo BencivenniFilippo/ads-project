@@ -100,7 +100,7 @@ def run_experiment(workload: list, rate: int) -> dict:
                 # Assure that we start the request after i / rate (if rate = 50, then every request should be sent every 0.02 seconds)
                 scheduled = start + i / rate
                 delay = scheduled - time.perf_counter()
-                if delay > 0:
+                if delay >= 0:
                     time.sleep(delay)
                 else:
                     logger.warning(f"Client {i}/{rate} isnt on time, lagging by {-delay:.3f} seconds")
