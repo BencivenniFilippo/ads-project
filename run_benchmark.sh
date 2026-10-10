@@ -16,13 +16,13 @@ run_client() {
   # --rm: Automatically remove the container when it exits
   # -T: Disable pseudo-TTY (prevents errors for this non-interactive script)
   # -e: Pass environment variables into the container
-  docker compose run --rm -T \ 
+  docker compose run --rm -T \
     -e RATE="$1" -e DURATION="$2" -e BENCH_FILES="$BENCH_FILES" client
 }
 
 docker compose up -d cache server
 
-echo "rate,avg_ms,p99_ms,max_lag_ms,errors,n_requests,repeat" > "$OUT"
+echo "rate,duration,avg_ms,p99_ms,max_lag_ms,errors,n_requests,repeat" > "$OUT"
 
 # Warm-up: wakes up connections, imports and the OS file cache. Output discarded.
 run_client 10 5 > /dev/null

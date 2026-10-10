@@ -82,6 +82,7 @@ def single_word_count_latency(pool: queue.Queue, file: str, word: str, scheduled
 
 def run_experiment(workload: list, rate: int) -> dict:
     n_requests = len(workload)
+    duration = n_requests / rate
     pool_size = 2 * rate
 
     pool = queue.Queue() # connections queue for assigning connections on the fly
@@ -103,7 +104,7 @@ def run_experiment(workload: list, rate: int) -> dict:
                 if delay >= 0:
                     time.sleep(delay)
                 else:
-                    logger.warning(f"Client {i}/{rate} isnt on time, lagging by {-delay:.3f} seconds")
+                    logger.warning(f"Client {i % rate} / {rate} isnt on time, lagging by {-delay:.3f} seconds")
 
                 # Send the request, and store the future object of the concurrent.futures class
                 future = executor.submit(single_word_count_latency, pool, file, word, scheduled)
@@ -129,13 +130,13 @@ def run_experiment(workload: list, rate: int) -> dict:
         logger.error("Not enough successful requests to compute statistics")
         return {"rate": rate, "errors": errors, "n_requests": n_requests}
 
-    avg_ms = sum(latencies) / len(latencies) * 1000
-    p99_ms = statistics.quantiles(latencies, n=100, method="inclusive")[98] * 1000
-    max_lag_ms = max(lags) * 1000
+    avg_ms = round(sum(latencies) / len(latencies) * 1000, 4)
+    p99_ms = round(statistics.quantiles(latencies, n=100, method="inclusive")[98] * 1000, 4)
+    max_lag_ms = round(max(lags) * 1000, 4)
 
     logger.info(f"rate={rate} req/s | avg={avg_ms:.2f} ms | p99={p99_ms:.2f} ms | max send lag={max_lag_ms:.2f} ms")
     logger.info(f"Errors: {errors} out of {n_requests} requests ({errors / n_requests * 100:.2f}%)")
-    return {"rate": rate, "avg_ms": avg_ms, "p99_ms": p99_ms,
+    return {"rate": rate, "duration": duration, "avg_ms": avg_ms, "p99_ms": p99_ms,
             "max_lag_ms": max_lag_ms, "errors": errors, "n_requests": n_requests}
 
 
@@ -156,5 +157,5 @@ if __name__ == "__main__":
     res = run_experiment(workload, rate)
 
     # CSV line on stdout (logs go to stderr), so the bash script can collect it
-    keys = ("rate", "avg_ms", "p99_ms", "max_lag_ms", "errors", "n_requests")
+    keys = ("rate", "duration", "avg_ms", "p99_ms", "max_lag_ms", "errors", "n_requests")
     print(",".join(str(res.get(k, "")) for k in keys), flush=True)
