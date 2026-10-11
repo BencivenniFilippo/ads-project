@@ -1,6 +1,5 @@
 import os
 import subprocess
-
 import redis
 import rpyc
 from rpyc.utils.server import ThreadedServer
@@ -14,7 +13,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(server_name)
 
-r = redis.Redis(host=os.getenv("CACHE_HOST", "cache"), port=os.getenv("CACHE_PORT", "6379"))
+r = redis.Redis(host=os.getenv("CACHE_HOST", "cache"), port=int(os.getenv("CACHE_PORT", "6379")))
 
 
 def word_count(filename: str, target_word: str) -> int:
@@ -38,7 +37,7 @@ class WordCountService(rpyc.Service):
         raw_value = r.get(file + "/" + word)
 
         if raw_value is not None:
-            logger.debug("Retreived from Redis: " + str(raw_value))
+            logger.debug("Retrieved from Redis: " + str(raw_value))
             return int(raw_value)
         
         logger.debug("No value found in Redis")

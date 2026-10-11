@@ -1,5 +1,5 @@
 services:
-  server:
+  server1:
     image: ads/server
     build:
       context: .
@@ -12,16 +12,47 @@ services:
       cache:
         condition: service_healthy
 
+  server2:
+    image: ads/server
+    environment:
+      RPC_PORT: "7777"
+      CACHE_HOST: "cache"
+      CACHE_PORT: "6379"
+    depends_on:
+      - cache
+
+  server3:
+    image: ads/server
+    environment:
+      RPC_PORT: "7777"
+      CACHE_HOST: "cache"
+      CACHE_PORT: "6379"
+    depends_on:
+      - cache
+
+  load_balancer:
+    image: ads/load_balancer
+    build:
+      context: .
+      dockerfile: load_balancer.Dockerfile
+    environment:
+      SERVERS: "server1:7777,server2:7777,server3:7777"
+      BIND_PORT: "7777"
+    depends_on:
+      - server1
+      - server2
+      - server3
+
   client:
     image: ads/client
     build:
       context: .
       dockerfile: client.Dockerfile
     environment:
-      LOAD_BALANCER_HOST: "server"
+      LOAD_BALANCER_HOST: "load_balancer"
       LOAD_BALANCER_PORT: "7777"
     depends_on:
-      - server
+      - load_balancer
 
   cache:
     image: redis:latest
