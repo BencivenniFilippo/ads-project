@@ -1,17 +1,18 @@
+import logging
 import os
-import subprocess
+
 import redis
 import rpyc
 from rpyc.utils.server import ThreadedServer
-import logging
 
-server_name = os.getenv("SERVER_NAME", "server")
+SERVER_NAME = os.getenv("SERVER_NAME", "server")
 logging.basicConfig(
-    level=logging.WARNING,
-    format=f'%(asctime)s - [{server_name}] - %(levelname)s - %(message)s',
+    level=logging.INFO,
+    format=f'%(asctime)s - [{SERVER_NAME}] - %(levelname)s - %(message)s',
     datefmt="%H:%M:%S"
 )
-logger = logging.getLogger(server_name)
+logger = logging.getLogger(SERVER_NAME)
+request_count = 0
 
 r = redis.Redis(host=os.getenv("CACHE_HOST", "cache"), port=int(os.getenv("CACHE_PORT", "6379")))
 
@@ -23,35 +24,41 @@ def word_count(filename: str, target_word: str) -> int:
         count = 0
 
         for line in text:
-            clean_line = line.strip()
-            if clean_line:
-                for word in clean_line.split():
-                    if word.lower() == target_word:
-                        count += 1
-
+            # Replace any character that isn't a letter or apostrophe with a space
+            clean_line = "".join(char if char.isalpha() or char == "'" else " " for char in line)
+            
+            for word in clean_line.split():
+                # Remove any leading/trailing apostrophes and convert to lowercase
+                word = word.strip("'").lower()
+                
+                if word and word == target_word:
+                    count += 1
     return(count)
 
 class WordCountService(rpyc.Service):
     def exposed_word_count(self, file: str, word: str) -> int:
+        global request_count
+        request_count += 1
         word = word.lower()
         raw_value = r.get(file + "/" + word)
 
         if raw_value is not None:
             logger.debug("Retrieved from Redis: " + str(raw_value))
-            return int(raw_value)
-        
-        logger.debug("No value found in Redis")
+            count = int(raw_value)
+        else:
+            logger.debug("No value found in Redis")
 
-        filepath = os.path.join(os.path.dirname(__file__), "Texts", file)
+            filepath = os.path.join(os.path.dirname(__file__), "Texts", file)
+            count = word_count(filepath, word)
+            r.set(file + "/" + word, count)
 
-        out = word_count(filepath, word)
-        #out = subprocess.check_output(f'grep -o -i "\\b{word}\\b" {filepath} | wc -l', shell=True)
-
-        try:
-            count = int(out)
-        except ValueError:
-            return -1
-        r.set(file + "/" + word, count)
+        logger.info(
+            f"Handled word-count request #%d for %s/%s (result=%d)",
+            request_count,
+            file,
+            word,
+            count,
+        )
         return count
 
 

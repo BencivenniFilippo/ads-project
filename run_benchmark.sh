@@ -19,11 +19,11 @@ run_client() {
   # -T: Disable pseudo-TTY (prevents errors for this non-interactive script)
   # -e: Pass environment variables into the container
   docker compose run --rm -T \
-    -e RATE="$1" -e DURATION="$2" -e BENCH_FILES="$BENCH_FILES" client
+    -e RATE="$1" -e DURATION="$2" -e BENCH_FILES="$BENCH_FILES" -e SEED="$SEED" client
 }
 
-docker compose build client server
-docker compose up -d cache server
+docker compose build client load_balancer server1
+docker compose up -d --wait cache server1 server2 server3 load_balancer # --wait waits until the services are running and their health checks have passed
 
 echo "rate,duration,avg_ms,p99_ms,max_lag_ms,errors,n_requests,repeat" > "$EXP_OUT"
 

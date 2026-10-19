@@ -5,30 +5,71 @@ services:
       context: .
       dockerfile: server.Dockerfile
     environment:
+      SERVER_NAME: "server1"
       RPC_PORT: "7777"
       CACHE_HOST: "cache"
       CACHE_PORT: "6379"
     depends_on:
       cache:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; s = socket.create_connection(('127.0.0.1', 7777), 2); s.close()",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   server2:
     image: ads/server
     environment:
+      SERVER_NAME: "server2"
       RPC_PORT: "7777"
       CACHE_HOST: "cache"
       CACHE_PORT: "6379"
     depends_on:
-      - cache
+      cache:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; s = socket.create_connection(('127.0.0.1', 7777), 2); s.close()",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   server3:
     image: ads/server
     environment:
+      SERVER_NAME: "server3"
       RPC_PORT: "7777"
       CACHE_HOST: "cache"
       CACHE_PORT: "6379"
     depends_on:
-      - cache
+      cache:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; s = socket.create_connection(('127.0.0.1', 7777), 2); s.close()",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   load_balancer:
     image: ads/load_balancer
@@ -36,12 +77,28 @@ services:
       context: .
       dockerfile: load_balancer.Dockerfile
     environment:
+      LB_NAME: "load_balancer"
       SERVERS: "server1:7777,server2:7777,server3:7777"
       BIND_PORT: "7777"
     depends_on:
-      - server1
-      - server2
-      - server3
+      server1:
+        condition: service_healthy
+      server2:
+        condition: service_healthy
+      server3:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; s = socket.create_connection(('127.0.0.1', 7777), 2); s.close()",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   client:
     image: ads/client
@@ -49,10 +106,9 @@ services:
       context: .
       dockerfile: client.Dockerfile
     environment:
+      CLIENT_NAME: "client"
       LOAD_BALANCER_HOST: "load_balancer"
       LOAD_BALANCER_PORT: "7777"
-    depends_on:
-      - load_balancer
 
   cache:
     image: redis:latest

@@ -9,7 +9,6 @@ import pathlib
 import re
 
 import rpyc
-from random_word import RandomWords
 
 
 client_name = os.getenv("CLIENT_NAME", "client")
@@ -23,22 +22,29 @@ logger = logging.getLogger(client_name)
 HOST = os.getenv("LOAD_BALANCER_HOST")
 PORT = int(os.getenv("LOAD_BALANCER_PORT", "7777"))
 TEXTS_DIR = pathlib.Path(os.getenv("TEXTS_DIR", "/app/Texts"))
-WORD_RE = re.compile(r"[a-z]+")  # letters only, see note below
+WORD_RE = re.compile(r"[a-z]+(?:'[a-z]+)*")
 DEFAULT_BENCH_FILES = "LOTR_1_TheFellowshipOfTheRing.txt,LOTR_3_ReturnOfTheKing.txt,Pulp_Fiction.txt,Forrest_Gump.txt"
 
 
-r = RandomWords()
-
 
 def connect() -> rpyc.Connection:
-    return rpyc.connect(HOST, PORT)
+    return rpyc.connect(HOST, PORT) # TCP (default) connection client -> LB
 
+def conn_root_helper(conn: rpyc.Connection, func_name: str, *args, **kwargs) -> any:
+    try:
+        method = getattr(conn.root, func_name)
+        result = method(*args, **kwargs)
+        return result
+    
+    except Exception as e:
+        raise RuntimeError(f"Error calling {func_name} on server: {e}") from e
+        
 
 def get_txt_files() -> list:
     conn = connect()
     try:
         # list(...) copies the remote list into a local one before closing
-        return list(conn.root.exposed_txt_file_list())
+        return list(conn_root_helper(conn, "exposed_txt_file_list"))
     finally:
         conn.close()
 
@@ -49,7 +55,7 @@ def build_vocabulary(files: list) -> dict:
     try:
         vocab = {}
         for f in files:
-            text = conn.root.exposed_read_file(f).lower()
+            text = conn_root_helper(conn, "exposed_read_file", f).lower()
             vocab[f] = sorted(set(WORD_RE.findall(text)))
         return vocab
     
@@ -70,7 +76,7 @@ def single_word_count_latency(pool: queue.Queue, file: str, word: str, scheduled
     conn = pool.get()
     try:
         start_time = time.perf_counter()
-        ans = conn.root.exposed_word_count(file, word)
+        ans = conn_root_helper(conn, "exposed_word_count", file, word)
         latency = time.perf_counter() - start_time # calculate latency according to professor definition (just consider client -> server -> client)
     finally:
         pool.put(conn)  # always give the connection back, even on error
@@ -130,9 +136,9 @@ def run_experiment(workload: list, rate: int) -> dict:
         logger.error("Not enough successful requests to compute statistics")
         return {"rate": rate, "errors": errors, "n_requests": n_requests}
 
-    avg_ms = round(sum(latencies) / len(latencies) * 1000, 2)
-    p99_ms = round(statistics.quantiles(latencies, n=100, method="inclusive")[98] * 1000, 2)
-    max_lag_ms = round(max(lags) * 1000, 2)
+    avg_ms = round(sum(latencies) / len(latencies) * 1000, 2) # Avg latency in milliseconds
+    p99_ms = round(statistics.quantiles(latencies, n=100, method="inclusive")[98] * 1000, 2) # 99th percentile latency in milliseconds
+    max_lag_ms = round(max(lags) * 1000, 2) # How late we were vs the planned send time, in milliseconds
 
     logger.info(f"rate={rate} req/s | avg={avg_ms:.2f} ms | p99={p99_ms:.2f} ms | max send lag={max_lag_ms:.2f} ms")
     logger.info(f"Errors: {errors} out of {n_requests} requests ({errors / n_requests * 100:.2f}%)")
