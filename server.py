@@ -7,7 +7,7 @@ from rpyc.utils.server import ThreadedServer
 
 SERVER_NAME = os.getenv("SERVER_NAME", "server")
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format=f'%(asctime)s - [{SERVER_NAME}] - %(levelname)s - %(message)s',
     datefmt="%H:%M:%S"
 )

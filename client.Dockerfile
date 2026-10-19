@@ -8,5 +8,6 @@ COPY requirements.txt ./
 RUN pip3 install -r requirements.txt
 
 COPY client.py ./
+COPY plot_results.py ./
 
 CMD [ "python", "client.py" ]

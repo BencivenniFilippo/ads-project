@@ -93,8 +93,24 @@ The client supports these environment variables:
 For a repeatable multi-rate experiment, run
 [`run_benchmark.sh`](run_benchmark.sh). It builds the client, load-balancer, and
 shared server image, starts the three replicas, waits for health checks, flushes
-Redis before each repetition, and writes CSV results and filtered client logs
-under `Experiments/`.
+Redis before each repetition, and creates a timestamped directory under
+`Experiments/`. Each run directory contains:
+
+```bash
+bash run_benchmark.sh
+```
+
+- `results.csv` — raw one-row-per-rate-and-repetition measurements
+- `manifest.txt` — rates, repetitions, seed, files, and services used
+- `client.log` — warm-up and benchmark client logs
+- `servers.log` — server logs captured after the run
+- `routing.csv` — handled-request counts per server
+- `average_latency.png` — average latency by request rate
+- `p99_latency.png` — p99 latency by request rate
+- `error_rate.png` — measured request error rate by request rate
+
+The raw CSV remains the source of truth; the plots are derived artifacts that
+make the results easier to inspect and include in the report.
 
 The server containers log every handled word-count request with their
 `SERVER_NAME` and cumulative request number. Inspect the distribution with:
@@ -103,7 +119,8 @@ The server containers log every handled word-count request with their
 docker compose logs --no-color server1 server2 server3
 ```
 
-This provides evidence of which replica handled each request.
+This provides evidence of which replica handled each request. The run's
+`routing.csv` provides the corresponding count summary.
 
 ## Server API
 
@@ -130,6 +147,9 @@ The load balancer reads:
 | `SERVERS` | empty | Comma-separated `host:port` server endpoints |
 | `BIND_PORT` | `7777` | Listening port |
 | `WEIGHTS` | empty | Optional comma-separated weights; the current handler uses unweighted least-connections selection |
+
+Plot generation uses Matplotlib inside the client image. The benchmark script
+does not replace raw measurements with plots; it stores both.
 
 ## Current assignment status
 
