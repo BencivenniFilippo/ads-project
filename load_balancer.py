@@ -27,36 +27,40 @@ except ValueError:
 SERVER_CONNECTIONS = [0] * len(SERVERS)
 SERVER_WEIGHTS = os.getenv("WEIGHTS", "")
 if SERVER_WEIGHTS != "":
-    SERVER_WEIGHTS = list(map(int, SERVER_WEIGHTS.split(",")))
+    try:
+        SERVER_WEIGHTS = [int(weight) for weight in SERVER_WEIGHTS.split(",")]
+        if len(SERVER_WEIGHTS) != len(SERVERS) or any(weight <= 0 for weight in SERVER_WEIGHTS):
+            raise ValueError
+    except ValueError:
+        logger.error("WEIGHTS must contain one positive integer per server")
+        raise SystemExit(1)
 
 SERVER_TIMES = [None] * len(SERVERS)
+EWMA_ALPHA = 0.2
 
 
-def update_server_ewma(server, elapsed, alpha=0.2):
-    index = SERVERS.index(server)
-    if SERVER_TIMES[index] is None:
-        SERVER_TIMES[index] = elapsed
+def update_server_ewma(server_index: int, elapsed: float) -> None:
+    if SERVER_TIMES[server_index] is None:
+        SERVER_TIMES[server_index] = elapsed
     else:
-        updated_time = (SERVER_TIMES[index] * (1 - alpha) + elapsed * alpha)
-
-        SERVER_TIMES[index] = updated_time
+        SERVER_TIMES[server_index] = (
+            SERVER_TIMES[server_index] * (1 - EWMA_ALPHA)
+            + elapsed * EWMA_ALPHA
+        )
 
 
 # Uses the least connections or weighted least connections methods
 def choose_server(algorithm: str = "least_connections") -> tuple[str, int, int]:
 
     if algorithm == "least_response_time":
-
-        for server, elapsed in zip(SERVERS, SERVER_TIMES):
+        for index, elapsed in enumerate(SERVER_TIMES):
             if elapsed is None:
-                return server[0], int(server[1]), SERVERS.index(server)
+                server = SERVERS[index]
+                return server[0], int(server[1]), index
 
-        i = SERVER_TIMES.index(min(SERVER_TIMES))
-
-        server = SERVERS[i]
-
-        return server[0], int(server[1]), SERVERS.index(server)
-
+        index = min(range(len(SERVER_TIMES)), key=SERVER_TIMES.__getitem__) # Extract index of min value in SERVER_TIMES
+        server = SERVERS[index]
+        return server[0], int(server[1]), index
 
     elif algorithm == "weighted_least_connections":
         connections = [c/w for c,w in zip(SERVER_CONNECTIONS, SERVER_WEIGHTS)]
@@ -72,7 +76,7 @@ def choose_server(algorithm: str = "least_connections") -> tuple[str, int, int]:
     return server[0], int(server[1]), index
 
 
-async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bool:
     try:
         while not reader.at_eof():
             data = await reader.read(4096)
@@ -80,10 +84,12 @@ async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
                 break
             writer.write(data)  # Queue data in the writer's outgoing buffer
             await writer.drain()  # Wait if the buffer is full to write the read data
+        return True
     except asyncio.CancelledError:
-        pass
+        return False
     except Exception as e:
         logger.error(e)
+        return False
     finally:
         writer.close()
 
@@ -91,32 +97,35 @@ async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
 async def client_handler(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter, algorithm: str = "least_connections"):
     server_index = None
     elapsed = None
+    transaction_succeeded = False
     try:
         server_host, server_port, server_index = choose_server(algorithm)  # Add True to use weighted method
         SERVER_CONNECTIONS[server_index] += 1
 
-        server_reader, server_writer = await asyncio.open_connection(server_host, server_port)  # TCP connection LB -> server
-
         start = time.perf_counter()
+        server_reader, server_writer = await asyncio.open_connection(server_host, server_port)  # TCP connection LB -> server
 
         # Create pipes to forward byte streams over the existing TCP connections
         client_to_server = asyncio.create_task(pipe(client_reader, server_writer)) # client -> LB -> server
         server_to_client = asyncio.create_task(pipe(server_reader, client_writer)) # server -> LB -> client
 
-        await asyncio.gather(client_to_server, server_to_client, return_exceptions=True)
+        pipe_results = await asyncio.gather(client_to_server, server_to_client)
 
         elapsed = time.perf_counter() - start
+        transaction_succeeded = all(pipe_results) # True if both pipes return True
 
     except Exception as e:
         logger.error(e)
         client_writer.close()
     
     finally:
-        if algorithm == "least_response_time": # TODO: can this if be optimized instead of running each request?
-            if elapsed is not None:
-                update_server_ewma(server_host, elapsed) # Update avg server transaction time
-            else: # TODO
-                pass
+        if (
+            algorithm == "least_response_time"
+            and server_index is not None
+            and elapsed is not None
+            and transaction_succeeded
+        ):
+            update_server_ewma(server_index, elapsed)
         
         if server_index is not None:
             SERVER_CONNECTIONS[server_index] -= 1
