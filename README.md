@@ -15,9 +15,7 @@ The Docker Compose application contains:
 - **`client`** — the benchmark client. It builds a workload from the available
   text files and reports average latency, p99 latency, send lag, and errors.
 - **`load_balancer`** — an asyncio TCP proxy that forwards each connection to a
-  server replica using the currently active least-connections selection.
-  Weighted least-connections support is present as a helper but is not yet
-  selected by the request handler.
+  server replica using the algorithm selected through `LB_ALGORITHM`.
 - **`server1`, `server2`, `server3`** — RPyC word-count service replicas.
 - **`cache`** — a Redis instance shared by all server replicas.
 
@@ -47,6 +45,11 @@ to pass their health checks. The server and load-balancer health checks verify
 that their TCP port `7777` is accepting connections. The load balancer listens
 on port `7777` inside the Compose network; no host port is published by the
 current `docker-compose.yaml`.
+
+Docker Compose automatically creates a private project network and attaches all
+services to it. The load balancer reaches the replicas using the Compose service
+names `server1`, `server2`, and `server3`; a separate custom network is not
+required for this project.
 
 To run the benchmark client once:
 
@@ -90,21 +93,43 @@ The client supports these environment variables:
 | `LOAD_BALANCER_HOST` | Set by Compose | Hostname of the load balancer |
 | `LOAD_BALANCER_PORT` | `7777` | Load balancer port |
 
-For a repeatable multi-rate experiment, run
-[`run_benchmark.sh`](run_benchmark.sh). It builds the client, load-balancer, and
+For a repeatable Phase 3 multi-rate experiment, run
+[`run_phase3.sh`](run_phase3.sh). It builds the client, load-balancer, and
 shared server image, starts the three replicas, waits for health checks, flushes
 Redis before each repetition, and creates a timestamped directory under
-`Experiments/`. Each run directory contains:
+`Experiments/`. It first runs `docker compose down --remove-orphans` so stale
+containers from an earlier Compose configuration are not reused. Each run
+directory contains:
 
 ```bash
-bash run_benchmark.sh
+bash run_phase3.sh
 ```
+
+The load-balancing algorithm can be selected without editing the Compose file:
+
+```bash
+LB_ALGORITHM=least_connections bash run_phase3.sh
+LB_ALGORITHM=least_response_time bash run_phase3.sh
+```
+
+The selected algorithm is recorded in that run's `manifest.txt`.
+
+The Phase 2 single-server benchmark is run separately:
+
+```bash
+bash run_phase2.sh
+```
+
+It starts only `cache` and `server1`, and runs the client directly against
+`server1` without the load balancer. Its results are stored under
+`Experiments/phase2_<timestamp>/`; Phase 3 results are stored under
+`Experiments/phase3_<timestamp>/`.
 
 - `results.csv` — raw one-row-per-rate-and-repetition measurements
 - `manifest.txt` — rates, repetitions, seed, files, and services used
 - `client.log` — warm-up and benchmark client logs
-- `servers.log` — server logs captured after the run
-- `routing.csv` — handled-request counts per server
+- `servers.log` — measured benchmark server logs captured after warm-up
+- `routing.csv` — measured handled-request counts per server, excluding warm-up
 - `average_latency.png` — average latency by request rate
 - `p99_latency.png` — p99 latency by request rate
 - `error_rate.png` — measured request error rate by request rate
@@ -113,7 +138,9 @@ The raw CSV remains the source of truth; the plots are derived artifacts that
 make the results easier to inspect and include in the report.
 
 The server containers log every handled word-count request with their
-`SERVER_NAME` and cumulative request number. Inspect the distribution with:
+`SERVER_NAME` and cumulative request number. The benchmark records server logs
+starting immediately after the warm-up, so `routing.csv` counts only measured
+benchmark requests. Inspect the distribution with:
 
 ```bash
 docker compose logs --no-color server1 server2 server3
@@ -146,19 +173,21 @@ The load balancer reads:
 | --- | --- | --- |
 | `SERVERS` | empty | Comma-separated `host:port` server endpoints |
 | `BIND_PORT` | `7777` | Listening port |
-| `WEIGHTS` | empty | Optional comma-separated weights; the current handler uses unweighted least-connections selection |
+| `LB_ALGORITHM` | `least_connections` | `least_connections`, `weighted_least_connections`, or `least_response_time` |
+| `WEIGHTS` | empty | Optional positive comma-separated weights, required by weighted least-connections |
 
 Plot generation uses Matplotlib inside the client image. The benchmark script
 does not replace raw measurements with plots; it stores both.
 
 ## Current assignment status
 
-The current repository contains the phase-3 deployment: three explicit server
-replicas, a Redis cache, an asyncio TCP load balancer, startup health checks, and
-the benchmark client. The active load-balancing algorithm is unweighted
-least-connections. Weighted least-connections exists in
-[`load_balancer.py`](load_balancer.py), but a runtime switch and comparative
-experiments for the second algorithm still need to be added.
+The current repository contains the Phase 2 single-server benchmark and the
+Phase 3 deployment: three explicit server replicas, a Redis cache, an asyncio
+TCP load balancer, startup health checks, and the benchmark client. The load
+balancer supports least-connections, weighted least-connections, and
+least-response-time selection. `run_phase3.sh` starts the three-replica
+deployment with the algorithm selected at the top of the script; the selected
+algorithm is recorded in each manifest.
 
 The initial smoke test completed successfully with four requests and zero
 errors. The full assignment evidence is still pending: phase 3 requires testing
@@ -177,7 +206,8 @@ gate startup.
 ├── docker-compose.yaml       # Redis, replicas, load balancer, and client
 ├── *Dockerfile               # Images for the three Python components
 ├── Texts/                    # Text corpus copied into server images
-├── run_benchmark.sh          # Multi-rate benchmark helper
+├── run_phase2.sh             # Phase 2 single-server benchmark
+├── run_phase3.sh             # Phase 3 multi-rate benchmark
 ├── requirements.txt          # Container runtime dependencies
 └── pyproject.toml            # Python project metadata and development dependencies
 ```

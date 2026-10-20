@@ -80,7 +80,7 @@ services:
       LB_NAME: "load_balancer"
       SERVERS: "server1:7777,server2:7777,server3:7777"
       BIND_PORT: "7777"
-      LB_ALGORITHM: "least_connections"
+      LB_ALGORITHM: "${LB_ALGORITHM:-least_connections}"
     depends_on:
       server1:
         condition: service_healthy
