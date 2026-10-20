@@ -19,14 +19,14 @@ flush() {
 
 run_client() {
   docker compose run --rm -T \
-    -e LOAD_BALANCER_HOST=server1 \
+    -e LOAD_BALANCER_HOST=server \
     -e RATE="$1" -e DURATION="$2" \
     -e BENCH_FILES="$BENCH_FILES" -e SEED="$SEED" -e HIT_RATE="$HIT_RATE" client
 }
 
 docker compose down --remove-orphans
-docker compose build client server1
-docker compose up -d --wait cache server1
+docker compose build client server
+docker compose up -d --wait cache server
 
 mkdir -p "$RUN_DIR"
 echo "rate,duration,avg_ms,p99_ms,max_lag_ms,errors,n_requests,repeat,actual_hits,actual_misses,actual_hit_rate" > "$EXP_OUT"
@@ -39,8 +39,8 @@ echo "rate,duration,avg_ms,p99_ms,max_lag_ms,errors,n_requests,repeat,actual_hit
   echo "seed=$SEED"
   echo "hit_rate=$HIT_RATE%"
   echo "bench_files=$BENCH_FILES"
-  echo "services=server1,cache"
-  echo "client_target=server1"
+  echo "services=server,cache"
+  echo "client_target=server"
 } > "$MANIFEST_OUT"
 
 # Warm-up: initialize Python/RPyC paths and OS file caches without measuring it.
@@ -56,7 +56,7 @@ for rate in "${RATES[@]}"; do
     line=$(run_client "$rate" "$DURATION" 2> "$client_log")
     cat "$client_log" >> "$CLIENT_LOG"
     rm "$client_log"
-    measured_logs=$(docker compose logs --since "$run_start" --no-color server1)
+    measured_logs=$(docker compose logs --since "$run_start" --no-color server)
     actual_hits=$(printf '%s\n' "$measured_logs" | awk '/cache_status=hit/{count++} END{print count+0}')
     actual_misses=$(printf '%s\n' "$measured_logs" | awk '/cache_status=miss/{count++} END{print count+0}')
     if [[ "$HIT_RATE" == "100" ]]; then
