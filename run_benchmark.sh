@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RATES=(50 70 90 110 130)
-REPEATS=3
-DURATION=20
+RATES=(50) #70 90 110 130)
+REPEATS=1
+DURATION=30
 SEED=42
 BENCH_FILES="LOTR_1_TheFellowshipOfTheRing.txt,LOTR_3_ReturnOfTheKing.txt,Pulp_Fiction.txt,Forrest_Gump.txt"
 EXP_OUT="Experiments/experiment_$(date +%Y%m%d_%H%M%S).csv"

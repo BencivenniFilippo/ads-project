@@ -1,7 +1,6 @@
 import concurrent.futures
 import logging
 import os
-import queue
 import random
 import statistics
 import time
@@ -30,7 +29,7 @@ DEFAULT_BENCH_FILES = "LOTR_1_TheFellowshipOfTheRing.txt,LOTR_3_ReturnOfTheKing.
 def connect() -> rpyc.Connection:
     return rpyc.connect(HOST, PORT) # TCP (default) connection client -> LB
 
-def conn_root_helper(conn: rpyc.Connection, func_name: str, *args, **kwargs) -> any:
+def conn_root_helper(conn: rpyc.Connection, func_name: str, *args, **kwargs):
     try:
         method = getattr(conn.root, func_name)
         result = method(*args, **kwargs)
@@ -72,14 +71,14 @@ def build_workload(vocab: dict, n: int, seed: int) -> list:
 
 
 
-def single_word_count_latency(pool: queue.Queue, file: str, word: str, scheduled: float) -> tuple:
-    conn = pool.get()
+def single_word_count_latency(file: str, word: str, scheduled: float) -> tuple:
+    conn = connect()
     try:
         start_time = time.perf_counter()
         ans = conn_root_helper(conn, "exposed_word_count", file, word)
         latency = time.perf_counter() - start_time # calculate latency according to professor definition (just consider client -> server -> client)
     finally:
-        pool.put(conn)  # always give the connection back, even on error
+        conn.close()
         
     lag = start_time - scheduled  # how late we were vs the planned send time
     return ans, latency, lag
@@ -91,46 +90,34 @@ def run_experiment(workload: list, rate: int) -> dict:
     duration = n_requests / rate
     pool_size = 2 * rate
 
-    pool = queue.Queue() # connections queue for assigning connections on the fly
-    connections = [] # connections list to keep track of them so that we can close them in the end
-    try:
-        # Start by adding all connections to both the list and the queue
-        for _ in range(pool_size):
-            c = connect()
-            connections.append(c)
-            pool.put(c)
+    futures = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=pool_size) as executor:
+        start = time.perf_counter()
+        for i, (file, word) in enumerate(workload):
+            # Assure that we start the request after i / rate (if rate = 50, then every request should be sent every 0.02 seconds)
+            scheduled = start + i / rate
+            delay = scheduled - time.perf_counter()
+            if delay >= 0:
+                time.sleep(delay)
+            elif i > 0:
+                logger.warning(f"Client {i % rate} / {rate} isnt on time, lagging by {-delay:.3f} seconds")
 
-        futures = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=pool_size) as executor:
-            start = time.perf_counter()
-            for i, (file, word) in enumerate(workload):
-                # Assure that we start the request after i / rate (if rate = 50, then every request should be sent every 0.02 seconds)
-                scheduled = start + i / rate
-                delay = scheduled - time.perf_counter()
-                if delay >= 0:
-                    time.sleep(delay)
-                elif i > 0:
-                    logger.warning(f"Client {i % rate} / {rate} isnt on time, lagging by {-delay:.3f} seconds")
+            # Send the request, and store the future object of the concurrent.futures class
+            future = executor.submit(single_word_count_latency, file, word, scheduled)
+            futures.append(future)
 
-                # Send the request, and store the future object of the concurrent.futures class
-                future = executor.submit(single_word_count_latency, pool, file, word, scheduled)
-                futures.append(future)
+    # leaving the with-block waits for every request to finish
 
-        # leaving the with-block waits for every request to finish
-
-        latencies, lags, errors = [], [], 0
-        for future in futures:
-            try:
-                _, latency, lag = future.result()
-            except Exception as exc:
-                errors += 1
-                logger.error(f"A request generated an exception: {exc}")
-            else:
-                latencies.append(latency)
-                lags.append(lag)
-    finally:
-        for c in connections:
-            c.close()
+    latencies, lags, errors = [], [], 0
+    for future in futures:
+        try:
+            _, latency, lag = future.result()
+        except Exception as exc:
+            errors += 1
+            logger.error(f"A request generated an exception: {exc}")
+        else:
+            latencies.append(latency)
+            lags.append(lag)
 
     if len(latencies) < 2:
         logger.error("Not enough successful requests to compute statistics")
