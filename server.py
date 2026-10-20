@@ -14,7 +14,7 @@ logging.basicConfig(
 logger = logging.getLogger(SERVER_NAME)
 logger.setLevel(logging.INFO)
 request_count = 0
-SUMMARY_INTERVAL = 50
+SUMMARY_INTERVAL = 100
 cache_hits = 0
 cache_misses = 0
 
