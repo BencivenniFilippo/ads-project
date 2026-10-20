@@ -39,7 +39,7 @@ def parse_hit_rate(value: str) -> int:
 def connect() -> rpyc.Connection:
     return rpyc.connect(HOST, PORT) # TCP (default) connection client -> LB
 
-def conn_root_helper(conn: rpyc.Connection, func_name: str, *args, **kwargs) -> any:
+def conn_root_helper(conn: rpyc.Connection, func_name: str, *args, **kwargs):
     try:
         method = getattr(conn.root, func_name)
         result = method(*args, **kwargs)

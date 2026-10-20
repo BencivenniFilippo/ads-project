@@ -81,7 +81,27 @@ def choose_server(algorithm: str = "least_connections") -> tuple[str, int, int]:
     return server[0], int(server[1]), index
 
 
-async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bool:
+async def buffering_pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, buffer: bytearray):
+    try:
+        # If this is a retry attempt, replay all previously buffered data first
+        if buffer:
+            writer.write(buffer)
+            await writer.drain()
+
+        # Continue reading new data from the client and adding it to the buffer
+        while not reader.at_eof():
+            data = await reader.read(4096)
+            if not data:
+                break
+            buffer.extend(data)
+            writer.write(data)
+            await writer.drain()
+
+    except asyncio.CancelledError as e:
+        logger.error(e)
+
+
+async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     try:
         while not reader.at_eof():
             data = await reader.read(4096)
@@ -101,25 +121,45 @@ async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bo
 
 async def client_handler(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter, algorithm: str = "least_connections"):
     global TOTAL_TRANSACTIONS
-    server_index = None
-    elapsed = None
-    transaction_succeeded = False
-    try:
-        server_host, server_port, server_index = choose_server(algorithm)  # Add True to use weighted method
-        SERVER_CONNECTIONS[server_index] += 1
+    client_buffer = bytearray()
 
-        start = time.perf_counter()
-        server_reader, server_writer = await asyncio.open_connection(server_host, server_port)  # TCP connection LB -> server
+    while any(SERVER_UP):
+        server_index = None
+        client_to_server = None
+        server_to_client = None
+        elapsed = None
+        transaction_succeeded = False
 
-        # Create pipes to forward byte streams over the existing TCP connections
-        client_to_server = asyncio.create_task(pipe(client_reader, server_writer)) # client -> LB -> server
-        server_to_client = asyncio.create_task(pipe(server_reader, client_writer)) # server -> LB -> client
+        try:
+            server_host, server_port, server_index = choose_server(algorithm)
+            SERVER_CONNECTIONS[server_index] += 1
 
-        pipe_results = await asyncio.gather(client_to_server, server_to_client)
+            start = time.perf_counter()
+            server_reader, server_writer = await asyncio.open_connection(server_host, server_port)
 
-        elapsed = time.perf_counter() - start
-        transaction_succeeded = all(pipe_results) # True if both pipes return True
-        if transaction_succeeded:
+            # Route 1: Client to Server (buffers data for potential mid-stream retries)
+            client_to_server = asyncio.create_task(buffering_pipe(client_reader, server_writer, client_buffer))
+
+            # Route 2: Server to Client (standard pass-through)
+            server_to_client = asyncio.create_task(pipe(server_reader, client_writer))
+
+            # Wait for either pipe to finish or throw an exception
+            done, pending = await asyncio.wait(
+                [client_to_server, server_to_client],
+                return_when=asyncio.FIRST_EXCEPTION
+            )
+
+            # Clean up the pending tasks immediately
+            for task in pending:
+                task.cancel()
+
+            # Check if an exception caused the tasks to stop
+            for task in done:
+                exc = task.exception()
+                if exc:
+                    raise exc
+
+            elapsed = time.perf_counter() - start
             SERVER_HANDLED[server_index] += 1
             TOTAL_TRANSACTIONS += 1
             if TOTAL_TRANSACTIONS % SUMMARY_INTERVAL == 0:
@@ -133,21 +173,30 @@ async def client_handler(client_reader: asyncio.StreamReader, client_writer: asy
                     routing,
                 )
 
-    except Exception as e:
-        logger.error(e)
-        client_writer.close()
-    
-    finally:
-        if (
-            algorithm == "least_response_time"
-            and server_index is not None
-            and elapsed is not None
-            and transaction_succeeded
-        ):
-            update_server_ewma(server_index, elapsed)
+            # If both pipes close cleanly without exceptions, the request is fully complete
+            break
 
-        if server_index is not None:
-            SERVER_CONNECTIONS[server_index] -= 1
+        except ValueError:
+            logger.error("No available servers left to handle the request.")
+            break
+
+        except Exception as e:
+            logger.warning(f"Connection failed mid-stream: {e}. Re-routing and replaying buffer...")
+            if server_index is not None:
+                SERVER_UP[server_index] = False
+
+        finally:
+            if (
+                    algorithm == "least_response_time"
+                    and server_index is not None
+                    and elapsed is not None
+                    and transaction_succeeded
+            ):
+                update_server_ewma(server_index, elapsed)
+            if server_index is not None:
+                SERVER_CONNECTIONS[server_index] -= 1
+
+    client_writer.close()
 
 
 async def server_monitoring():
@@ -160,19 +209,23 @@ async def server_monitoring():
                         new_conn = rpyc.connect(SERVERS[i][0], int(SERVERS[i][1]))
                         rpc_conn[i] = new_conn
                         SERVER_UP[i] = True
-                    except:
+                    except Exception as e:
+                        logger.error(e)
                         SERVER_UP[i] = False
                 else:
                     try:
                         conn.ping()
                         SERVER_UP[i] = True
-                    except rpyc.core.protocol.PingError:
+                    except rpyc.core.protocol.PingError as e:
+                        logger.error(e)
                         SERVER_UP[i] = False
-                    except EOFError:
+                    except EOFError as e:
+                        logger.error(e)
                         SERVER_UP[i] = False
                         rpc_conn[i] = None
-            await asyncio.sleep(2)
-    except asyncio.CancelledError:
+            await asyncio.sleep(1)
+    except asyncio.CancelledError as e:
+        logger.error(e)
         for conn in rpc_conn:
             if conn is not None:
                 conn.close()

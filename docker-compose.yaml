@@ -10,20 +10,7 @@ services:
       CACHE_HOST: "cache"
       CACHE_PORT: "6379"
     depends_on:
-      cache:
-        condition: service_healthy
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import socket; s = socket.create_connection(('127.0.0.1', 7777), 2); s.close()",
-        ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
+      - cache
 
   server2:
     image: ads/server
@@ -33,20 +20,7 @@ services:
       CACHE_HOST: "cache"
       CACHE_PORT: "6379"
     depends_on:
-      cache:
-        condition: service_healthy
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import socket; s = socket.create_connection(('127.0.0.1', 7777), 2); s.close()",
-        ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
+      - cache
 
   server3:
     image: ads/server
@@ -56,20 +30,7 @@ services:
       CACHE_HOST: "cache"
       CACHE_PORT: "6379"
     depends_on:
-      cache:
-        condition: service_healthy
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import socket; s = socket.create_connection(('127.0.0.1', 7777), 2); s.close()",
-        ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
+      - cache
 
   load_balancer:
     image: ads/load_balancer
@@ -82,24 +43,9 @@ services:
       BIND_PORT: "7777"
       LB_ALGORITHM: "${LB_ALGORITHM:-least_connections}"
     depends_on:
-      server1:
-        condition: service_healthy
-      server2:
-        condition: service_healthy
-      server3:
-        condition: service_healthy
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import socket; s = socket.create_connection(('127.0.0.1', 7777), 2); s.close()",
-        ]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
+      - server1
+      - server2
+      - server3
 
   client:
     image: ads/client
@@ -110,14 +56,10 @@ services:
       CLIENT_NAME: "client"
       LOAD_BALANCER_HOST: "load_balancer"
       LOAD_BALANCER_PORT: "7777"
+    depends_on:
+      - load_balancer
 
   cache:
     image: redis:latest
     environment:
       REDIS_ARGS: "--protected-mode no"
-    healthcheck:
-        test: ["CMD", "redis-cli", "ping"]
-        interval: 5s
-        timeout: 3s
-        retries: 5
-        start_period: 10s
