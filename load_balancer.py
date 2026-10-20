@@ -1,4 +1,5 @@
 import asyncio
+from functools import partial
 import os
 import logging
 import time
@@ -37,7 +38,7 @@ if SERVER_WEIGHTS != "":
 
 SERVER_TIMES = [None] * len(SERVERS)
 EWMA_ALPHA = 0.2
-SUMMARY_INTERVAL = 25
+SUMMARY_INTERVAL = 100
 SERVER_HANDLED = [0] * len(SERVERS)
 TOTAL_TRANSACTIONS = 0
 
@@ -159,7 +160,8 @@ async def main():
         backends,
     )
 
-    lb = await asyncio.start_server(client_handler, port=port, algorithm=algorithm) # Create TCP LB server
+    handler = partial(client_handler, algorithm=algorithm)
+    lb = await asyncio.start_server(handler, port=port) # Create TCP LB server
 
     async with lb:
         await lb.serve_forever()
