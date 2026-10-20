@@ -46,6 +46,11 @@ that their TCP port `7777` is accepting connections. The load balancer listens
 on port `7777` inside the Compose network; no host port is published by the
 current `docker-compose.yaml`.
 
+These startup health checks verify process and TCP readiness; they do not warm
+Python imports, RPyC connection paths, OS file caches, or the application-level
+Redis word-count cache. The benchmark scripts therefore perform a separate
+warm-up before measurement.
+
 Docker Compose automatically creates a private project network and attaches all
 services to it. The load balancer reaches the replicas using the Compose service
 names `server1`, `server2`, and `server3`; a separate custom network is not
@@ -127,8 +132,8 @@ It starts only `cache` and `server1`, and runs the client directly against
 
 - `results.csv` — raw one-row-per-rate-and-repetition measurements
 - `manifest.txt` — rates, repetitions, seed, files, and services used
-- `client.log` — warm-up and benchmark client logs
-- `servers.log` — measured benchmark server logs captured after warm-up
+- `client.log` — benchmark configuration, progress, latency summaries, and errors
+- `servers.log` — measured load-balancer and server startup/routing summaries
 - `routing.csv` — measured handled-request counts per server, excluding warm-up
 - `average_latency.png` — average latency by request rate
 - `p99_latency.png` — p99 latency by request rate
@@ -137,10 +142,16 @@ It starts only `cache` and `server1`, and runs the client directly against
 The raw CSV remains the source of truth; the plots are derived artifacts that
 make the results easier to inspect and include in the report.
 
-The server containers log every handled word-count request with their
-`SERVER_NAME` and cumulative request number. The benchmark records server logs
-starting immediately after the warm-up, so `routing.csv` counts only measured
-benchmark requests. Inspect the distribution with:
+The benchmark scripts run a short labeled warm-up before the measured rates.
+The warm-up initializes connection paths and runtime/file caches, but its
+requests are excluded from measured server logs and routing summaries because
+the measurement start timestamp is recorded only after warm-up. The warm-up is
+also not written to `results.csv`.
+
+The server containers identify themselves with `SERVER_NAME` and emit periodic
+cumulative request summaries. The load balancer logs
+periodic routing summaries, and `routing.csv` is derived from the latest
+measured routing summary. Inspect the distribution with:
 
 ```bash
 docker compose logs --no-color server1 server2 server3

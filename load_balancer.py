@@ -37,6 +37,9 @@ if SERVER_WEIGHTS != "":
 
 SERVER_TIMES = [None] * len(SERVERS)
 EWMA_ALPHA = 0.2
+SUMMARY_INTERVAL = 25
+SERVER_HANDLED = [0] * len(SERVERS)
+TOTAL_TRANSACTIONS = 0
 
 
 def update_server_ewma(server_index: int, elapsed: float) -> None:
@@ -95,6 +98,7 @@ async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bo
 
 
 async def client_handler(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter, algorithm: str = "least_connections"):
+    global TOTAL_TRANSACTIONS
     server_index = None
     elapsed = None
     transaction_succeeded = False
@@ -113,6 +117,19 @@ async def client_handler(client_reader: asyncio.StreamReader, client_writer: asy
 
         elapsed = time.perf_counter() - start
         transaction_succeeded = all(pipe_results) # True if both pipes return True
+        if transaction_succeeded:
+            SERVER_HANDLED[server_index] += 1
+            TOTAL_TRANSACTIONS += 1
+            if TOTAL_TRANSACTIONS % SUMMARY_INTERVAL == 0:
+                routing = " ".join(
+                    f"{host}={count}"
+                    for (host, _), count in zip(SERVERS, SERVER_HANDLED)
+                )
+                logger.info(
+                    "routing summary | total=%d | %s",
+                    TOTAL_TRANSACTIONS,
+                    routing,
+                )
 
     except Exception as e:
         logger.error(e)
@@ -134,6 +151,13 @@ async def client_handler(client_reader: asyncio.StreamReader, client_writer: asy
 async def main():
     port = os.getenv("BIND_PORT", "7777")
     algorithm = os.getenv("LB_ALGORITHM", "least_connections")
+    backends = ",".join(f"{host}:{server_port}" for host, server_port in SERVERS)
+    logger.info(
+        "starting load balancer | port=%s | algorithm=%s | backends=%s",
+        port,
+        algorithm,
+        backends,
+    )
 
     lb = await asyncio.start_server(client_handler, port=port, algorithm=algorithm) # Create TCP LB server
 

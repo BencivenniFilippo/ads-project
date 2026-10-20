@@ -1,7 +1,6 @@
 import concurrent.futures
 import logging
 import os
-import queue
 import random
 import statistics
 import time
@@ -89,6 +88,12 @@ def run_experiment(workload: list, rate: int) -> dict:
     n_requests = len(workload)
     duration = n_requests / rate
     pool_size = 2 * rate
+    logger.info(
+        "benchmark start | target_rate=%d req/s | requests=%d | workers=%d",
+        rate,
+        n_requests,
+        pool_size,
+    )
 
     futures = []
 
@@ -128,8 +133,18 @@ def run_experiment(workload: list, rate: int) -> dict:
     p99_ms = round(statistics.quantiles(latencies, n=100, method="inclusive")[98] * 1000, 2) # 99th percentile latency in milliseconds
     max_lag_ms = round(max(lags) * 1000, 2) # How late we were vs the planned send time, in milliseconds
 
-    logger.info(f"rate={rate} req/s | avg={avg_ms:.2f} ms | p99={p99_ms:.2f} ms | max send lag={max_lag_ms:.2f} ms")
-    logger.info(f"Errors: {errors} out of {n_requests} requests ({errors / n_requests * 100:.2f}%)")
+    logger.info(
+        "benchmark complete | target_rate=%d req/s | requests=%d | successful=%d "
+        "| errors=%d | workers=%d | avg=%.2f ms | p99=%.2f ms | max_send_lag=%.2f ms",
+        rate,
+        n_requests,
+        len(latencies),
+        errors,
+        pool_size,
+        avg_ms,
+        p99_ms,
+        max_lag_ms,
+    )
     return {"rate": rate, "duration": duration, "avg_ms": avg_ms, "p99_ms": p99_ms,
             "max_lag_ms": max_lag_ms, "errors": errors, "n_requests": n_requests}
 
@@ -140,7 +155,14 @@ if __name__ == "__main__":
     duration = int(os.getenv("DURATION", "20"))
     seed = int(os.getenv("SEED", "42"))
     bench_files = [f.strip() for f in os.getenv("BENCH_FILES", DEFAULT_BENCH_FILES).split(",") if f.strip()]
-    logger.info(f"config: rate={rate} duration={duration} seed={seed} files={bench_files}")
+    logger.info(
+        "config | rate=%d req/s | duration=%d s | requests=%d | seed=%d | files=%s",
+        rate,
+        duration,
+        rate * duration,
+        seed,
+        bench_files,
+    )
 
     server_files = get_txt_files()
     missing = [f for f in bench_files if f not in server_files]

@@ -44,9 +44,12 @@ echo "rate,duration,avg_ms,p99_ms,max_lag_ms,errors,n_requests,repeat" > "$EXP_O
   echo "services=server1,server2,server3,load_balancer,cache"
 } > "$MANIFEST_OUT"
 
-# Warm-up: wakes up connections, imports and the OS file cache. Output discarded.
+ # Warm-up: initialize Python/RPyC paths and OS file caches without measuring it.
+echo "warm-up start | rate=10 req/s | duration=5 s" >> "$CLIENT_LOG"
 run_client 10 5 > /dev/null 2>> "$CLIENT_LOG"
+echo "warm-up complete" >> "$CLIENT_LOG"
 MEASURE_START="$(date --iso-8601=ns)"
+BASELINE_SUMMARY=$(docker compose logs --no-color load_balancer | grep "routing summary" | tail -n 1 || true)
 
 for rate in "${RATES[@]}"; do
   for rep in $(seq 1 "$REPEATS"); do
@@ -60,12 +63,14 @@ for rate in "${RATES[@]}"; do
   done
 done
 
-docker compose logs --since "$MEASURE_START" --no-color server1 server2 server3 > "$SERVER_LOG"
+docker compose logs --since "$MEASURE_START" --no-color load_balancer server1 server2 server3 > "$SERVER_LOG"
 {
   echo "server,handled_requests"
+  summary=$(grep "routing summary" "$SERVER_LOG" | tail -n 1 || true)
   for server in server1 server2 server3; do
-    count=$(grep "$server" "$SERVER_LOG" | grep -c "Handled word-count request" || true)
-    echo "$server,$count"
+    measured=$(printf '%s\n' "$summary" | sed -n "s/.*$server=\([0-9][0-9]*\).*/\1/p")
+    baseline=$(printf '%s\n' "$BASELINE_SUMMARY" | sed -n "s/.*$server=\([0-9][0-9]*\).*/\1/p")
+    echo "$server,$(( ${measured:-0} - ${baseline:-0} ))"
   done
 } > "$ROUTING_OUT"
 

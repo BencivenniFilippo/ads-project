@@ -41,8 +41,10 @@ echo "rate,duration,avg_ms,p99_ms,max_lag_ms,errors,n_requests,repeat" > "$EXP_O
   echo "client_target=server1"
 } > "$MANIFEST_OUT"
 
-# Warm-up: wakes up connections, imports and the OS file cache.
+# Warm-up: initialize Python/RPyC paths and OS file caches without measuring it.
+echo "warm-up start | rate=10 req/s | duration=5 s" >> "$CLIENT_LOG"
 run_client 10 5 > /dev/null 2>> "$CLIENT_LOG"
+echo "warm-up complete" >> "$CLIENT_LOG"
 
 for rate in "${RATES[@]}"; do
   for rep in $(seq 1 "$REPEATS"); do

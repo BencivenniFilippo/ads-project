@@ -12,7 +12,9 @@ logging.basicConfig(
     datefmt="%H:%M:%S"
 )
 logger = logging.getLogger(SERVER_NAME)
+logger.setLevel(logging.INFO)
 request_count = 0
+SUMMARY_INTERVAL = 100
 
 r = redis.Redis(host=os.getenv("CACHE_HOST", "cache"), port=int(os.getenv("CACHE_PORT", "6379")))
 
@@ -52,13 +54,14 @@ class WordCountService(rpyc.Service):
             count = word_count(filepath, word)
             r.set(file + "/" + word, count)
 
-        logger.info(
-            f"Handled word-count request #%d for %s/%s (result=%d)",
-            request_count,
-            file,
-            word,
-            count,
-        )
+        if request_count == 1 or request_count % SUMMARY_INTERVAL == 0:
+            logger.info(
+                "handled_requests=%d latest=%s/%s result=%d",
+                request_count,
+                file,
+                word,
+                count,
+            )
         return count
 
 
@@ -72,5 +75,11 @@ class WordCountService(rpyc.Service):
 
 
 if __name__ == "__main__":
-    server = ThreadedServer(WordCountService, port=int(os.getenv('RPC_PORT', "7777")))
+    port = int(os.getenv("RPC_PORT", "7777"))
+    logger.info(
+        "starting server on port %d with cache host %s",
+        port,
+        os.getenv("CACHE_HOST", "cache"),
+    )
+    server = ThreadedServer(WordCountService, port=port)
     server.start()
