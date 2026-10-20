@@ -5,6 +5,7 @@ RATES=(50 70 90 110 130)
 REPEATS=2
 DURATION=10
 SEED=42
+HIT_RATE="${HIT_RATE:-0}"
 LB_ALGORITHM="least_connections" # least_connections or least_response_time
 BENCH_FILES="LOTR_1_TheFellowshipOfTheRing.txt,LOTR_3_ReturnOfTheKing.txt,Pulp_Fiction.txt,Forrest_Gump.txt"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
@@ -24,7 +25,8 @@ run_client() {
   # -T: Disable pseudo-TTY (prevents errors for this non-interactive script)
   # -e: Pass environment variables into the container
   docker compose run --rm -T \
-    -e RATE="$1" -e DURATION="$2" -e BENCH_FILES="$BENCH_FILES" -e SEED="$SEED" client
+    -e RATE="$1" -e DURATION="$2" -e BENCH_FILES="$BENCH_FILES" \
+    -e SEED="$SEED" -e HIT_RATE="$HIT_RATE" client
 }
 
 docker compose down --remove-orphans
@@ -32,7 +34,7 @@ docker compose build client load_balancer server1
 LB_ALGORITHM="$LB_ALGORITHM" docker compose up -d --wait cache server1 server2 server3 load_balancer # --wait waits until the services are running and their health checks have passed
 
 mkdir -p "$RUN_DIR"
-echo "rate,duration,avg_ms,p99_ms,max_lag_ms,errors,n_requests,repeat" > "$EXP_OUT"
+echo "rate,duration,avg_ms,p99_ms,max_lag_ms,errors,n_requests,repeat,actual_hits,actual_misses,actual_hit_rate" > "$EXP_OUT"
 {
   echo "run_id=$RUN_ID"
   echo "algorithm=$LB_ALGORITHM"
@@ -40,6 +42,7 @@ echo "rate,duration,avg_ms,p99_ms,max_lag_ms,errors,n_requests,repeat" > "$EXP_O
   echo "repeats=$REPEATS"
   echo "duration=$DURATION"
   echo "seed=$SEED"
+  echo "hit_rate=$HIT_RATE%"
   echo "bench_files=$BENCH_FILES"
   echo "services=server1,server2,server3,load_balancer,cache"
 } > "$MANIFEST_OUT"
@@ -53,12 +56,25 @@ BASELINE_SUMMARY=$(docker compose logs --no-color load_balancer | grep "routing 
 
 for rate in "${RATES[@]}"; do
   for rep in $(seq 1 "$REPEATS"); do
-    flush                                   # empty cache => every request is a miss
+    flush                                   # reset the cache for the selected workload mode
+    run_start="$(date --iso-8601=ns)"
     client_log=$(mktemp)
     line=$(run_client "$rate" "$DURATION" 2> "$client_log")
     cat "$client_log" >> "$CLIENT_LOG"
     rm "$client_log"
-    echo "$line,$rep" >> "$EXP_OUT"
+    measured_logs=$(docker compose logs --since "$run_start" --no-color server1 server2 server3)
+    actual_hits=$(printf '%s\n' "$measured_logs" | awk '/cache_status=hit/{count++} END{print count+0}')
+    actual_misses=$(printf '%s\n' "$measured_logs" | awk '/cache_status=miss/{count++} END{print count+0}')
+    if [[ "$HIT_RATE" == "100" ]]; then
+      actual_misses=$((actual_misses - 1))
+    fi
+    measured_total=$((actual_hits + actual_misses))
+    if (( measured_total > 0 )); then
+      actual_hit_rate=$(awk -v hits="$actual_hits" -v total="$measured_total" 'BEGIN { printf "%.2f", 100 * hits / total }')
+    else
+      actual_hit_rate=""
+    fi
+    echo "$line,$rep,$actual_hits,$actual_misses,$actual_hit_rate" >> "$EXP_OUT"
     echo "done rate=$rate repeat=$rep" >&2
   done
 done

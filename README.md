@@ -84,8 +84,20 @@ docker compose down
 
 The benchmark client sends `RATE * DURATION` requests at the requested rate.
 It first retrieves the server's file list and reads the selected files through
-RpyC to build a vocabulary. It then samples unique `(file, word)` pairs using
-the configured random seed.
+RpyC to build a vocabulary. It then creates a deterministic workload using the
+configured random seed. `HIT_RATE` supports three experiment modes:
+
+- `0` (default): every measured `(file, word)` pair is unique.
+- `50`: the client creates an even workload with half unique pairs. It splits
+  the unique half into balanced chunks and sends each chunk twice in sequence,
+  creating a controlled repeated-request pattern.
+- `100`: the client prewarms one `(file, word)` pair, then sends that pair for
+  every measured request.
+
+The 100% prewarm request is excluded from measured latency and from the
+reported actual hit/miss counts. The 50% mode is designed so the first
+occurrence populates Redis before the repeated occurrence; under severe
+overload, concurrent requests can still overlap.
 
 The client supports these environment variables:
 
@@ -94,6 +106,7 @@ The client supports these environment variables:
 | `RATE` | `50` | Target requests per second |
 | `DURATION` | `20` | Benchmark duration in seconds |
 | `SEED` | `42` | Random seed used to build the workload |
+| `HIT_RATE` | `0` | Cache workload mode: `0`, `50`, or `100` |
 | `BENCH_FILES` | `LOTR_1_TheFellowshipOfTheRing.txt,LOTR_3_ReturnOfTheKing.txt,Pulp_Fiction.txt,Forrest_Gump.txt` | Comma-separated files to benchmark |
 | `LOAD_BALANCER_HOST` | Set by Compose | Hostname of the load balancer |
 | `LOAD_BALANCER_PORT` | `7777` | Load balancer port |
@@ -110,19 +123,27 @@ directory contains:
 bash run_phase3.sh
 ```
 
-The load-balancing algorithm can be selected without editing the Compose file:
+The load-balancing algorithm can be selected editing the run_phase3.sh script. Then, to run it:
 
 ```bash
-LB_ALGORITHM=least_connections bash run_phase3.sh
-LB_ALGORITHM=least_response_time bash run_phase3.sh
+bash run_phase3.sh
 ```
 
 The selected algorithm is recorded in that run's `manifest.txt`.
 
-The Phase 2 single-server benchmark is run separately:
+The Phase 2 single-server benchmark is run separately. Both scripts default to
+an all-miss workload. Set `HIT_RATE` in the environment or edit its default
+near the top of the script to select one of the supported cache modes:
 
 ```bash
 bash run_phase2.sh
+HIT_RATE=50 bash run_phase2.sh
+```
+
+For a one-off client run, pass the setting directly:
+
+```bash
+docker compose run --rm -e HIT_RATE=50 -e RATE=50 -e DURATION=20 client
 ```
 
 It starts only `cache` and `server1`, and runs the client directly against
@@ -130,7 +151,8 @@ It starts only `cache` and `server1`, and runs the client directly against
 `Experiments/phase2_<timestamp>/`; Phase 3 results are stored under
 `Experiments/phase3_<timestamp>/`.
 
-- `results.csv` — raw one-row-per-rate-and-repetition measurements
+- `results.csv` — raw one-row-per-rate-and-repetition measurements, including
+  server-observed `actual_hits`, `actual_misses`, and `actual_hit_rate`
 - `manifest.txt` — rates, repetitions, seed, files, and services used
 - `client.log` — benchmark configuration, progress, latency summaries, and errors
 - `servers.log` — measured load-balancer and server startup/routing summaries
@@ -148,8 +170,10 @@ requests are excluded from measured server logs and routing summaries because
 the measurement start timestamp is recorded only after warm-up. The warm-up is
 also not written to `results.csv`.
 
-The server containers identify themselves with `SERVER_NAME` and emit periodic
-cumulative request summaries. The load balancer logs
+The server containers identify themselves with `SERVER_NAME` and emit one
+machine-readable cache status log line for each word-count request. The
+benchmark scripts count these lines for each measured repetition and append
+the actual hit/miss totals to `results.csv`. The load balancer logs
 periodic routing summaries, and `routing.csv` is derived from the latest
 measured routing summary. Inspect the distribution with:
 

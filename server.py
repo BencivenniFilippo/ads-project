@@ -14,7 +14,9 @@ logging.basicConfig(
 logger = logging.getLogger(SERVER_NAME)
 logger.setLevel(logging.INFO)
 request_count = 0
-SUMMARY_INTERVAL = 100
+SUMMARY_INTERVAL = 50
+cache_hits = 0
+cache_misses = 0
 
 r = redis.Redis(host=os.getenv("CACHE_HOST", "cache"), port=int(os.getenv("CACHE_PORT", "6379")))
 
@@ -39,15 +41,17 @@ def word_count(filename: str, target_word: str) -> int:
 
 class WordCountService(rpyc.Service):
     def exposed_word_count(self, file: str, word: str) -> int:
-        global request_count
+        global request_count, cache_hits, cache_misses
         request_count += 1
         word = word.lower()
         raw_value = r.get(file + "/" + word)
 
         if raw_value is not None:
+            cache_hits += 1
             logger.debug("Retrieved from Redis: " + str(raw_value))
             count = int(raw_value)
         else:
+            cache_misses += 1
             logger.debug("No value found in Redis")
 
             filepath = os.path.join(os.path.dirname(__file__), "Texts", file)
@@ -56,8 +60,11 @@ class WordCountService(rpyc.Service):
 
         if request_count == 1 or request_count % SUMMARY_INTERVAL == 0:
             logger.info(
-                "handled_requests=%d latest=%s/%s result=%d",
+                "handled_requests=%d cache_hits=%d cache_misses=%d "
+                "latest=%s/%s result=%d",
                 request_count,
+                cache_hits,
+                cache_misses,
                 file,
                 word,
                 count,

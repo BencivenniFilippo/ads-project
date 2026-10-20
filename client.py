@@ -25,6 +25,16 @@ WORD_RE = re.compile(r"[a-z]+(?:'[a-z]+)*")
 DEFAULT_BENCH_FILES = "LOTR_1_TheFellowshipOfTheRing.txt,LOTR_3_ReturnOfTheKing.txt,Pulp_Fiction.txt,Forrest_Gump.txt"
 
 
+def parse_hit_rate(value: str) -> int:
+    try:
+        hit_rate = int(value)
+    except ValueError as exc:
+        raise ValueError("HIT_RATE must be 0, 50, or 100") from exc
+    if hit_rate not in (0, 50, 100):
+        raise ValueError("HIT_RATE must be 0, 50, or 100")
+    return hit_rate
+
+
 
 def connect() -> rpyc.Connection:
     return rpyc.connect(HOST, PORT) # TCP (default) connection client -> LB
@@ -62,12 +72,53 @@ def build_vocabulary(files: list) -> dict:
         conn.close()
 
 
-def build_workload(vocab: dict, n: int, seed: int) -> list:
+def build_workload(vocab: dict, n: int, seed: int, hit_rate: int) -> list:
     rng = random.Random(seed)
     all_pairs = [(f, w) for f, words in vocab.items() for w in words]
-    if n > len(all_pairs):
-        raise ValueError(f"Asked for {n} unique pairs, only {len(all_pairs)} exist")
-    return rng.sample(all_pairs, n)  # without replacement: every pair is new
+    if hit_rate == 100:
+        if not all_pairs:
+            raise ValueError("Cannot create a 100% hit workload without any pairs")
+        return [all_pairs[rng.randrange(len(all_pairs))]] * n
+
+    unique_count = n if hit_rate == 0 else n // 2
+    if hit_rate == 50 and unique_count < 2:
+        raise ValueError("HIT_RATE=50 requires at least two unique pairs")
+    if unique_count > len(all_pairs):
+        raise ValueError(
+            f"Asked for {unique_count} unique pairs, only {len(all_pairs)} exist"
+        )
+
+    base_workload = rng.sample(all_pairs, unique_count)
+    if hit_rate == 0:
+        return base_workload
+
+    if n % 2 != 0:
+        raise ValueError("HIT_RATE=50 requires an even request count")
+
+    # Repeat balanced chunks instead of shuffling individual requests. This
+    # keeps duplicate pairs apart while mixing cold and repeated requests.
+    target_chunks = 4 if unique_count >= 400 else 2
+    chunk_count = min(target_chunks, unique_count)
+    chunk_size, remainder = divmod(unique_count, chunk_count)
+    workload = []
+    start = 0
+    for chunk_index in range(chunk_count):
+        # Put any remainder in the final chunk so it is never a small tail.
+        size = chunk_size + (remainder if chunk_index == chunk_count - 1 else 0)
+        chunk = base_workload[start:start + size]
+        workload.extend(chunk)
+        workload.extend(chunk)
+        start += size
+    return workload
+
+
+def prewarm_cache(workload: list) -> None:
+    file, word = workload[0]
+    conn = connect()
+    try:
+        conn_root_helper(conn, "exposed_word_count", file, word)
+    finally:
+        conn.close()
 
 
 
@@ -154,13 +205,16 @@ if __name__ == "__main__":
     rate = int(os.getenv("RATE", "50"))
     duration = int(os.getenv("DURATION", "20"))
     seed = int(os.getenv("SEED", "42"))
+    hit_rate = parse_hit_rate(os.getenv("HIT_RATE", "0"))
     bench_files = [f.strip() for f in os.getenv("BENCH_FILES", DEFAULT_BENCH_FILES).split(",") if f.strip()]
     logger.info(
-        "config | rate=%d req/s | duration=%d s | requests=%d | seed=%d | files=%s",
+        "config | rate=%d req/s | duration=%d s | requests=%d | seed=%d | "
+        "hit_rate=%d%% | files=%s",
         rate,
         duration,
         rate * duration,
         seed,
+        hit_rate,
         bench_files,
     )
 
@@ -169,7 +223,12 @@ if __name__ == "__main__":
     if missing:
         raise SystemExit(f"Not known to the server: {missing}")
 
-    workload = build_workload(build_vocabulary(bench_files), rate * duration, seed)
+    n_requests = rate * duration
+    workload = build_workload(
+        build_vocabulary(bench_files), n_requests, seed, hit_rate
+    )
+    if hit_rate == 100:
+        prewarm_cache(workload)
     res = run_experiment(workload, rate)
 
     # CSV line on stdout (logs go to stderr), so the bash script can collect it
