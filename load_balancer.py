@@ -61,8 +61,10 @@ async def buffering_pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWri
             writer.write(data)
             await writer.drain()
 
-    except asyncio.CancelledError as e:
-        logger.error(e)
+        if writer.can_write_eof():
+            writer.write_eof()
+    except asyncio.CancelledError:
+        pass
 
 
 async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -71,14 +73,14 @@ async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
             data = await reader.read(4096)
             if not data:
                 break
-            writer.write(data)  # Queue data in the writer's outgoing buffer
-            await writer.drain()  # Wait if the buffer is full to write the read data
+            try:
+                writer.write(data)
+                await writer.drain()
+            except (ConnectionResetError, BrokenPipeError):
+                # Client closed its socket; do not blame the backend server
+                break
     except asyncio.CancelledError:
         pass
-    except Exception as e:
-        logger.error(e)
-    finally:
-        writer.close()
 
 
 async def client_handler(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter):
@@ -86,6 +88,7 @@ async def client_handler(client_reader: asyncio.StreamReader, client_writer: asy
 
     while any(SERVER_UP):
         server_index = None
+        server_writer = None
         client_to_server = None
         server_to_client = None
 
@@ -95,29 +98,44 @@ async def client_handler(client_reader: asyncio.StreamReader, client_writer: asy
 
             server_reader, server_writer = await asyncio.open_connection(server_host, server_port)
 
-            # Route 1: Client to Server (buffers data for potential mid-stream retries)
-            client_to_server = asyncio.create_task(buffering_pipe(client_reader, server_writer, client_buffer))
-
-            # Route 2: Server to Client (standard pass-through)
-            server_to_client = asyncio.create_task(pipe(server_reader, client_writer))
-
-            # Wait for either pipe to finish or throw an exception
-            done, pending = await asyncio.wait(
-                [client_to_server, server_to_client],
-                return_when=asyncio.FIRST_EXCEPTION
+            client_to_server = asyncio.create_task(
+                buffering_pipe(client_reader, server_writer, client_buffer)
+            )
+            server_to_client = asyncio.create_task(
+                pipe(server_reader, client_writer)
             )
 
-            # Clean up the pending tasks immediately
-            for task in pending:
-                task.cancel()
+            done, pending = await asyncio.wait(
+                [client_to_server, server_to_client],
+                return_when=asyncio.FIRST_COMPLETED
+            )
 
-            # Check if an exception caused the tasks to stop
+            # 1. If the finished task raised an exception (e.g. server reset connection), re-raise it
             for task in done:
                 exc = task.exception()
                 if exc:
+                    for p in pending:
+                        p.cancel()
                     raise exc
 
-            # If both pipes close cleanly without exceptions, the request is fully complete
+            # 2. If server_to_client finished first, check if the client is also closing normally
+            if server_to_client in done and client_to_server in pending:
+                try:
+                    # On normal conn.close(), client_to_server hits EOF within ~1ms
+                    await asyncio.wait_for(client_to_server, timeout=0.2)
+                except asyncio.TimeoutError:
+                    # Client is still waiting for a response -> server died mid-request
+                    client_to_server.cancel()
+                    raise ConnectionResetError("Server closed connection unexpectedly mid-stream")
+
+            # 3. If client_to_server finished first (client closed), let server_to_client flush
+            if client_to_server in done and server_to_client in pending:
+                try:
+                    await asyncio.wait_for(server_to_client, timeout=1.0)
+                except asyncio.TimeoutError:
+                    server_to_client.cancel()
+
+            # Request completed cleanly
             break
 
         except ValueError:
@@ -132,6 +150,8 @@ async def client_handler(client_reader: asyncio.StreamReader, client_writer: asy
         finally:
             if server_index is not None:
                 SERVER_CONNECTIONS[server_index] -= 1
+            if server_writer is not None:
+                server_writer.close()
 
     client_writer.close()
 
