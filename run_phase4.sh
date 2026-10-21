@@ -4,9 +4,9 @@
 # middle of the run, and plots the per-request latency timeline.
 set -euo pipefail
 
-RATE=50
-DURATION=30
-KILL_DELAY=10                 # Seconds after the benchmark starts to inject the failure
+RATE=110
+DURATION=20
+KILL_DELAY=8                 # Seconds after the benchmark starts to inject the failure
 TARGET_SERVER="server2"
 FAILURE_MODE="kill"           # "kill" (abrupt crash / SIGKILL) or "stop" (graceful SIGTERM)
 LB_ALGORITHM="least_connections"   # least_connections or least_response_time
@@ -14,7 +14,7 @@ SEED=42
 BENCH_FILES="LOTR_1_TheFellowshipOfTheRing.txt,LOTR_3_ReturnOfTheKing.txt,Pulp_Fiction.txt,Forrest_Gump.txt"
 
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
-RUN_DIR="Experiments/fault_$RUN_ID"
+RUN_DIR="Experiments/phase4_${RUN_ID}_${LB_ALGORITHM}"
 CLIENT_LOG="$RUN_DIR/client.log"
 EVENT_LOG="$RUN_DIR/events.log"
 SUMMARY_OUT="$RUN_DIR/results.csv"
