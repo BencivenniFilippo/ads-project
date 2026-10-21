@@ -122,20 +122,62 @@ def prewarm_cache(workload: list) -> None:
 
 
 
-def single_word_count_latency(file: str, word: str, scheduled: float) -> tuple:
-    conn = connect()
+import csv
+
+def single_word_count_latency(
+    req_id: int, file: str, word: str, scheduled: float, exp_start: float
+) -> dict:
+    conn = None
+    start_time = time.perf_counter()
     try:
+        conn = connect()
+        # Reset start_time after connect() so successful RPC latency matches professor definition
         start_time = time.perf_counter()
         ans = conn_root_helper(conn, "exposed_word_count", file, word)
-        latency = time.perf_counter() - start_time # calculate latency according to professor definition (just consider client -> server -> client)
+        end_time = time.perf_counter()
+        return {
+            "req_id": req_id,
+            "scheduled_s": round(scheduled - exp_start, 4),
+            "start_s": round(start_time - exp_start, 4),
+            "end_s": round(end_time - exp_start, 4),
+            "latency_ms": round((end_time - start_time) * 1000, 2),
+            "lag_ms": round((start_time - scheduled) * 1000, 2),
+            "status": "ok",
+            "ans": ans,
+            "error": "",
+        }
+    except Exception as exc:
+        end_time = time.perf_counter()
+        return {
+            "req_id": req_id,
+            "scheduled_s": round(scheduled - exp_start, 4),
+            "start_s": round(start_time - exp_start, 4),
+            "end_s": round(end_time - exp_start, 4),
+            "latency_ms": round((end_time - start_time) * 1000, 2),
+            "lag_ms": round((start_time - scheduled) * 1000, 2),
+            "status": "error",
+            "ans": None,
+            "error": str(exc),
+        }
     finally:
-        conn.close() # always give the connection back, even on error
-        
-    lag = start_time - scheduled  # how late we were vs the planned send time
-    return ans, latency, lag
+        if conn is not None:
+            conn.close()
 
 
-def run_experiment(workload: list, rate: int) -> dict:
+def write_trace_csv(trace_path: str, records: list[dict]) -> None:
+    path = pathlib.Path(trace_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "req_id", "scheduled_s", "start_s", "end_s",
+        "latency_ms", "lag_ms", "status", "error"
+    ]
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(sorted(records, key=lambda r: r["req_id"]))
+
+
+def run_experiment(workload: list, rate: int, trace_file: str = "") -> dict:
     n_requests = len(workload)
     duration = n_requests / rate
     pool_size = 2 * rate
@@ -147,57 +189,50 @@ def run_experiment(workload: list, rate: int) -> dict:
     )
 
     futures = []
-
     with concurrent.futures.ThreadPoolExecutor(max_workers=pool_size) as executor:
-        start = time.perf_counter()
+        exp_start = time.perf_counter()
         for i, (file, word) in enumerate(workload):
-            # Assure that we start the request after i / rate (if rate = 50, then every request should be sent every 0.02 seconds)
-            scheduled = start + i / rate
+            scheduled = exp_start + i / rate
             delay = scheduled - time.perf_counter()
             if delay >= 0:
                 time.sleep(delay)
             elif i > 0:
                 logger.warning(f"Client {i % rate} / {rate} isnt on time, lagging by {-delay:.3f} seconds")
 
-            # Send the request, and store the future object of the concurrent.futures class
-            future = executor.submit(single_word_count_latency, file, word, scheduled)
+            future = executor.submit(
+                single_word_count_latency, i, file, word, scheduled, exp_start
+            )
             futures.append(future)
 
-    # leaving the with-block waits for every request to finish
+    records = [f.result() for f in futures]
+    if trace_file:
+        write_trace_csv(trace_file, records)
 
-    latencies, lags, errors = [], [], 0
-    for future in futures:
-        try:
-            _, latency, lag = future.result()
-        except Exception as exc:
-            errors += 1
-            logger.error(f"A request generated an exception: {exc}")
-        else:
-            latencies.append(latency)
-            lags.append(lag)
+    latencies_ms = [r["latency_ms"] for r in records if r["status"] == "ok"]
+    lags_ms = [r["lag_ms"] for r in records if r["status"] == "ok"]
+    errors = sum(1 for r in records if r["status"] != "ok")
 
-    if len(latencies) < 2:
+    for r in records:
+        if r["status"] != "ok":
+            logger.error(f"Request {r['req_id']} at t={r['start_s']}s failed: {r['error']}")
+
+    if len(latencies_ms) < 2:
         logger.error("Not enough successful requests to compute statistics")
         return {"rate": rate, "errors": errors, "n_requests": n_requests}
 
-    avg_ms = round(sum(latencies) / len(latencies) * 1000, 2) # Avg latency in milliseconds
-    p99_ms = round(statistics.quantiles(latencies, n=100, method="inclusive")[98] * 1000, 2) # 99th percentile latency in milliseconds
-    max_lag_ms = round(max(lags) * 1000, 2) # How late we were vs the planned send time, in milliseconds
+    avg_ms = round(sum(latencies_ms) / len(latencies_ms), 2)
+    p99_ms = round(statistics.quantiles(latencies_ms, n=100, method="inclusive")[98], 2)
+    max_lag_ms = round(max(lags_ms), 2)
 
     logger.info(
         "benchmark complete | target_rate=%d req/s | requests=%d | successful=%d "
         "| errors=%d | workers=%d | avg=%.2f ms | p99=%.2f ms | max_send_lag=%.2f ms",
-        rate,
-        n_requests,
-        len(latencies),
-        errors,
-        pool_size,
-        avg_ms,
-        p99_ms,
-        max_lag_ms,
+        rate, n_requests, len(latencies_ms), errors, pool_size, avg_ms, p99_ms, max_lag_ms,
     )
-    return {"rate": rate, "duration": duration, "avg_ms": avg_ms, "p99_ms": p99_ms,
-            "max_lag_ms": max_lag_ms, "errors": errors, "n_requests": n_requests}
+    return {
+        "rate": rate, "duration": duration, "avg_ms": avg_ms, "p99_ms": p99_ms,
+        "max_lag_ms": max_lag_ms, "errors": errors, "n_requests": n_requests,
+    }
 
 
 
@@ -229,7 +264,9 @@ if __name__ == "__main__":
     )
     if hit_rate == 100:
         prewarm_cache(workload)
-    res = run_experiment(workload, rate)
+        
+    trace_file = os.getenv("TRACE_FILE", "")
+    res = run_experiment(workload, rate, trace_file=trace_file)
 
     # CSV line on stdout (logs go to stderr), so the bash script can collect it
     keys = ("rate", "duration", "avg_ms", "p99_ms", "max_lag_ms", "errors", "n_requests")

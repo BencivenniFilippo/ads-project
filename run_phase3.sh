@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+#set -euo pipefail
 
 RATES=(50 70 90 110 130)
 REPEATS=2
@@ -21,17 +21,23 @@ flush() {
 }
 
 run_client() {
-  # --rm: Automatically remove the container when it exits
-  # -T: Disable pseudo-TTY (prevents errors for this non-interactive script)
-  # -e: Pass environment variables into the container
+  local rate="$1"
+  local duration="$2"
+  local trace_file="${3:-}"
+  # --rm: Automatically remove the container when it exits[cite: 3]
+  # -T: Disable pseudo-TTY (prevents errors for this non-interactive script)[cite: 3]
+  # -v: Mount run directory to /results for trace output persistence
   docker compose run --rm -T \
-    -e RATE="$1" -e DURATION="$2" -e BENCH_FILES="$BENCH_FILES" \
-    -e SEED="$SEED" -e HIT_RATE="$HIT_RATE" client
+    -v "$(pwd)/$RUN_DIR:/results" \
+    -e RATE="$rate" -e DURATION="$duration" -e BENCH_FILES="$BENCH_FILES" \
+    -e SEED="$SEED" -e HIT_RATE="$HIT_RATE" \
+    -e TRACE_FILE="$trace_file" \
+    client
 }
 
 docker compose down --remove-orphans
 docker compose build client load_balancer server1
-LB_ALGORITHM="$LB_ALGORITHM" docker compose up -d --wait cache server1 server2 server3 load_balancer # --wait waits until the services are running and their health checks have passed
+LB_ALGORITHM="$LB_ALGORITHM" docker compose up -d --wait cache server1 server2 server3 load_balancer # --wait waits until healthy[cite: 3]
 
 mkdir -p "$RUN_DIR"
 echo "rate,duration,avg_ms,p99_ms,max_lag_ms,errors,n_requests,repeat,actual_hits,actual_misses,actual_hit_rate" > "$EXP_OUT"
@@ -47,19 +53,19 @@ echo "rate,duration,avg_ms,p99_ms,max_lag_ms,errors,n_requests,repeat,actual_hit
   echo "services=server1,server2,server3,load_balancer,cache"
 } > "$MANIFEST_OUT"
 
- # Warm-up: initialize Python/RPyC paths and OS file caches without measuring it.
+# Warm-up: initialize Python/RPyC paths and OS file caches without measuring it[cite: 3].
 echo "warm-up start | rate=10 req/s | duration=5 s" >> "$CLIENT_LOG"
-run_client 10 5 > /dev/null 2>> "$CLIENT_LOG"
+run_client 10 5 "" > /dev/null 2>> "$CLIENT_LOG"
 echo "warm-up complete" >> "$CLIENT_LOG"
 MEASURE_START="$(date --iso-8601=ns)"
 BASELINE_SUMMARY=$(docker compose logs --no-color load_balancer | grep "routing summary" | tail -n 1 || true)
 
 for rate in "${RATES[@]}"; do
   for rep in $(seq 1 "$REPEATS"); do
-    flush                                   # reset the cache for the selected workload mode
+    flush                                   # reset the cache for the selected workload mode[cite: 3]
     run_start="$(date --iso-8601=ns)"
     client_log=$(mktemp)
-    line=$(run_client "$rate" "$DURATION" 2> "$client_log")
+    line=$(run_client "$rate" "$DURATION" "" 2> "$client_log")
     cat "$client_log" >> "$CLIENT_LOG"
     rm "$client_log"
     measured_logs=$(docker compose logs --since "$run_start" --no-color server1 server2 server3)
@@ -79,6 +85,28 @@ for rate in "${RATES[@]}"; do
   done
 done
 
+# --- Dedicated Server Failure Trace Experiment ---
+echo "Starting server failure trace experiment..." >> "$CLIENT_LOG"
+flush
+FAILURE_TIME=5.0
+TRACE_CSV="/results/server_failure_trace.csv"
+
+# Kill server2 5 seconds into a 15-second run at 90 req/s
+( sleep "$FAILURE_TIME" && docker compose kill server2 ) &
+FAIL_PID=$!
+
+client_log=$(mktemp)
+run_client 90 15 "$TRACE_CSV" 2> "$client_log"
+cat "$client_log" >> "$CLIENT_LOG"
+rm "$client_log"
+wait "$FAIL_PID" || true
+
+# Plot the per-request timeline showing the exact latency spike and failure markers
+docker compose run --rm -T \
+  -v "$(pwd)/$RUN_DIR:/results" \
+  client python plot_results.py --trace "$TRACE_CSV" --failure-time "$FAILURE_TIME" --output-dir /results
+-------------------------------------------------
+
 docker compose logs --since "$MEASURE_START" --no-color load_balancer server1 server2 server3 > "$SERVER_LOG"
 {
   echo "server,handled_requests"
@@ -94,4 +122,4 @@ docker compose run --rm -T \
   -v "$(pwd)/$RUN_DIR:/results" \
   client python plot_results.py /results/results.csv --output-dir /results
 
-echo "Results in $RUN_DIR" >&2
+echo "Results and timeline plot saved in $RUN_DIR" >&2
