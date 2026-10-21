@@ -112,19 +112,37 @@ async def pipe(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
             try:
                 writer.write(data)
                 await writer.drain()
-                return True
             except (ConnectionResetError, BrokenPipeError):
                 # Client closed its socket; do not blame the backend server
                 return False
+        return True
     except asyncio.CancelledError:
         return False
+
+
+NO_SERVER_WAIT_TIMEOUT = float(os.getenv("NO_SERVER_WAIT_TIMEOUT", "5"))
+
+
+async def wait_for_any_server(timeout: float) -> bool:
+    deadline = time.perf_counter() + timeout
+    while not any(SERVER_UP):
+        if time.perf_counter() >= deadline:
+            return False
+        await asyncio.sleep(0.1)
+    return True
 
 
 async def client_handler(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter, algorithm: str = "least_connections"):
     global TOTAL_TRANSACTIONS
     client_buffer = bytearray()
 
-    while any(SERVER_UP):
+    while True:
+        # At startup the monitor may not have marked any backend as UP yet.
+        # Wait briefly instead of dropping the client connection immediately.
+        if not await wait_for_any_server(NO_SERVER_WAIT_TIMEOUT):
+            logger.error("No available servers left to handle the request.")
+            break
+
         server_index = None
         server_writer = None
         client_to_server = None
@@ -255,7 +273,6 @@ async def server_monitoring():
 async def main():
     port = os.getenv("BIND_PORT", "7777")
     sm = asyncio.create_task(server_monitoring())
-    lb = await asyncio.start_server(client_handler, port=port) # Create TCP LB server
     algorithm = os.getenv("LB_ALGORITHM", "least_connections")
     backends = ",".join(f"{host}:{server_port}" for host, server_port in SERVERS)
     logger.info(
