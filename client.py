@@ -126,7 +126,8 @@ def single_word_count_latency(file: str, word: str, scheduled: float) -> tuple:
     conn = connect()
     try:
         start_time = time.perf_counter()
-        ans = conn_root_helper(conn, "exposed_word_count", file, word)
+        #ans = conn_root_helper(conn, "exposed_word_count", file, word)
+        ans = conn.root.word_count(file, word)
         latency = time.perf_counter() - start_time # calculate latency according to professor definition (just consider client -> server -> client)
     finally:
         conn.close() # always give the connection back, even on error

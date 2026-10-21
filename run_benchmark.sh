@@ -24,6 +24,7 @@ run_client() {
 
 docker compose build client load_balancer server1
 docker compose up -d --wait cache server1 server2 server3 load_balancer # --wait waits until the services are running and their health checks have passed
+sleep 2
 
 echo "rate,duration,avg_ms,p99_ms,max_lag_ms,errors,n_requests,repeat" > "$EXP_OUT"
 
