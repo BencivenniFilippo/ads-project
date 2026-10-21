@@ -124,53 +124,60 @@ def prewarm_cache(workload: list) -> None:
 
 import csv
 
-
 def single_word_count_latency(
     req_id: int, file: str, word: str, scheduled: float, exp_start: float
 ) -> dict:
-    start_time = time.perf_counter()
-    t_send = start_time - exp_start
-    lag = start_time - scheduled  # how late we were vs the planned send time
     conn = None
+    start_time = time.perf_counter()
     try:
         conn = connect()
-        #ans = conn_root_helper(conn, "exposed_word_count", file, word)
-        ans = conn.root.word_count(file, word)
-        latency = time.perf_counter() - start_time
+        # Reset start_time after connect() so successful RPC latency matches professor definition
+        start_time = time.perf_counter()
+        ans = conn_root_helper(conn, "exposed_word_count", file, word)
+        end_time = time.perf_counter()
         return {
             "req_id": req_id,
-            "t_send_s": round(t_send, 4),
-            "t_done_s": round(t_send + latency, 4),
-            "latency_ms": round(latency * 1000, 2),
-            "lag_ms": round(lag * 1000, 2),
+            "scheduled_s": round(scheduled - exp_start, 4),
+            "start_s": round(start_time - exp_start, 4),
+            "end_s": round(end_time - exp_start, 4),
+            "latency_ms": round((end_time - start_time) * 1000, 2),
+            "lag_ms": round((start_time - scheduled) * 1000, 2),
             "status": "ok",
             "ans": ans,
-            "latency_s": latency,
-            "lag_s": lag,
+            "error": "",
         }
     except Exception as exc:
-        latency = time.perf_counter() - start_time
-        logger.error(f"Request #{req_id} generated an exception: {exc}")
+        end_time = time.perf_counter()
         return {
             "req_id": req_id,
-            "t_send_s": round(t_send, 4),
-            "t_done_s": round(t_send + latency, 4),
-            "latency_ms": round(latency * 1000, 2),
-            "lag_ms": round(lag * 1000, 2),
+            "scheduled_s": round(scheduled - exp_start, 4),
+            "start_s": round(start_time - exp_start, 4),
+            "end_s": round(end_time - exp_start, 4),
+            "latency_ms": round((end_time - start_time) * 1000, 2),
+            "lag_ms": round((start_time - scheduled) * 1000, 2),
             "status": "error",
+            "ans": None,
             "error": str(exc),
-            "latency_s": latency,
-            "lag_s": lag,
         }
     finally:
         if conn is not None:
-            conn.close() # always give the connection back, even on error
-        
-    lag = start_time - scheduled  # how late we were vs the planned send time
-    return ans, latency, lag
+            conn.close()
 
 
-def run_experiment(workload: list, rate: int, trace_out: str = "") -> dict:
+def write_trace_csv(trace_path: str, records: list[dict]) -> None:
+    path = pathlib.Path(trace_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "req_id", "scheduled_s", "start_s", "end_s",
+        "latency_ms", "lag_ms", "status", "error"
+    ]
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(sorted(records, key=lambda r: r["req_id"]))
+
+
+def run_experiment(workload: list, rate: int, trace_file: str = "") -> dict:
     n_requests = len(workload)
     duration = n_requests / rate
     pool_size = 2 * rate
@@ -182,12 +189,10 @@ def run_experiment(workload: list, rate: int, trace_out: str = "") -> dict:
     )
 
     futures = []
-
     with concurrent.futures.ThreadPoolExecutor(max_workers=pool_size) as executor:
-        start = time.perf_counter()
+        exp_start = time.perf_counter()
         for i, (file, word) in enumerate(workload):
-            # Assure that we start the request after i / rate (if rate = 50, then every request should be sent every 0.02 seconds)
-            scheduled = start + i / rate
+            scheduled = exp_start + i / rate
             delay = scheduled - time.perf_counter()
             if delay >= 0:
                 time.sleep(delay)
@@ -195,46 +200,39 @@ def run_experiment(workload: list, rate: int, trace_out: str = "") -> dict:
                 logger.warning(f"Client {i % rate} / {rate} isnt on time, lagging by {-delay:.3f} seconds")
 
             future = executor.submit(
-                single_word_count_latency, i, file, word, scheduled, start
+                single_word_count_latency, i, file, word, scheduled, exp_start
             )
             futures.append(future)
 
-    records = [future.result() for future in futures]
+    records = [f.result() for f in futures]
+    if trace_file:
+        write_trace_csv(trace_file, records)
 
-    if trace_out:
-        os.makedirs(os.path.dirname(trace_out) or ".", exist_ok=True)
-        fieldnames = ["req_id", "t_send_s", "t_done_s", "latency_ms", "lag_ms", "status"]
-        with open(trace_out, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-            writer.writeheader()
-            writer.writerows(records)
+    latencies_ms = [r["latency_ms"] for r in records if r["status"] == "ok"]
+    lags_ms = [r["lag_ms"] for r in records if r["status"] == "ok"]
+    errors = sum(1 for r in records if r["status"] != "ok")
 
-    latencies = [r["latency_s"] for r in records if r["status"] == "ok"]
-    lags = [r["lag_s"] for r in records if r["status"] == "ok"]
-    errors = sum(1 for r in records if r["status"] == "error")
+    for r in records:
+        if r["status"] != "ok":
+            logger.error(f"Request {r['req_id']} at t={r['start_s']}s failed: {r['error']}")
 
-    if len(latencies) < 2:
+    if len(latencies_ms) < 2:
         logger.error("Not enough successful requests to compute statistics")
         return {"rate": rate, "errors": errors, "n_requests": n_requests}
 
-    avg_ms = round(sum(latencies) / len(latencies) * 1000, 2)
-    p99_ms = round(statistics.quantiles(latencies, n=100, method="inclusive")[98] * 1000, 2)
-    max_lag_ms = round(max(lags) * 1000, 2)
+    avg_ms = round(sum(latencies_ms) / len(latencies_ms), 2)
+    p99_ms = round(statistics.quantiles(latencies_ms, n=100, method="inclusive")[98], 2)
+    max_lag_ms = round(max(lags_ms), 2)
 
     logger.info(
         "benchmark complete | target_rate=%d req/s | requests=%d | successful=%d "
         "| errors=%d | workers=%d | avg=%.2f ms | p99=%.2f ms | max_send_lag=%.2f ms",
-        rate,
-        n_requests,
-        len(latencies),
-        errors,
-        pool_size,
-        avg_ms,
-        p99_ms,
-        max_lag_ms,
+        rate, n_requests, len(latencies_ms), errors, pool_size, avg_ms, p99_ms, max_lag_ms,
     )
-    return {"rate": rate, "duration": duration, "avg_ms": avg_ms, "p99_ms": p99_ms,
-            "max_lag_ms": max_lag_ms, "errors": errors, "n_requests": n_requests}
+    return {
+        "rate": rate, "duration": duration, "avg_ms": avg_ms, "p99_ms": p99_ms,
+        "max_lag_ms": max_lag_ms, "errors": errors, "n_requests": n_requests,
+    }
 
 
 
@@ -267,7 +265,9 @@ if __name__ == "__main__":
     )
     if hit_rate == 100:
         prewarm_cache(workload)
-    res = run_experiment(workload, rate, trace_out=trace_out)
+        
+    trace_file = os.getenv("TRACE_FILE", "")
+    res = run_experiment(workload, rate, trace_file=trace_file)
 
     keys = ("rate", "duration", "avg_ms", "p99_ms", "max_lag_ms", "errors", "n_requests")
     print(",".join(str(res.get(k, "")) for k in keys), flush=True)
