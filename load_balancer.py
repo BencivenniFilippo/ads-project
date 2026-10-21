@@ -243,7 +243,7 @@ async def client_handler(client_reader: asyncio.StreamReader, client_writer: asy
 def ping_server(conn) -> bool:
     """Blocking ping on an existing connection (run in a thread)."""
     try:
-        conn.ping(timeout=2)
+        conn.ping(timeout=1)
         return True
     except Exception:
         return False

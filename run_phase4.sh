@@ -2,14 +2,15 @@
 # Phase 4 - fault tolerance experiment.
 # Runs the 3-server deployment under constant load, kills one server in the
 # middle of the run, and plots the per-request latency timeline.
-set -euo pipefail
+#set -euo pipefail
 
 RATE="${RATE:-70}"
 DURATION="${DURATION:-20}"
-KILL_DELAY="${KILL_DELAY:-10}"                 # Seconds after the benchmark starts to inject the failure
+KILL_DELAY="${KILL_DELAY:-4}"                 # Seconds after the benchmark starts to inject the failure
+RES_DELAY="${RES_DELAY:-8}"
 TARGET_SERVER="server2"
 FAILURE_MODE="kill"           # "kill" (abrupt crash / SIGKILL) or "stop" (graceful SIGTERM)
-LB_ALGORITHM="${LB_ALGORITHM:-least_response_time}"   # least_connections or least_response_time
+LB_ALGORITHM="${LB_ALGORITHM:-least_connections}"   # least_connections or least_response_time
 SEED=42
 BENCH_FILES="LOTR_1_TheFellowshipOfTheRing.txt,LOTR_3_ReturnOfTheKing.txt,Pulp_Fiction.txt,Forrest_Gump.txt"
 
@@ -64,6 +65,13 @@ flush
 ) &
 KILLER_PID=$!
 
+(
+  until grep -q "benchmark start" "$CLIENT_LOG" 2>/dev/null; do sleep 0.05; done
+  sleep "$RES_DELAY"
+  echo "[$(date +%H:%M:%S)] restarting server: $FAILURE_MODE $TARGET_SERVER" >> "$EVENT_LOG"
+  docker compose start "$TARGET_SERVER" > /dev/null 2>&1
+) &
+
 # --no-deps: do not let compose restart the stopped server as a dependency of the client
 if ! line=$(docker compose run --rm -T --no-deps \
   -v "$(pwd)/$RUN_DIR:/results" \
@@ -85,7 +93,7 @@ docker compose logs --no-color load_balancer > "$RUN_DIR/load_balancer.log" 2>&1
 docker compose run --rm -T --no-deps \
   -v "$(pwd)/$RUN_DIR:/results" \
   client python plot_results.py --trace "/results/$TRACE_NAME" \
-  --failure-time "$KILL_DELAY" --output-dir /results
+  --failure-time "$KILL_DELAY" --restart-time "$RES_DELAY" --output-dir /results
 
 # Bring the failed server back so the deployment is left healthy
 docker compose start "$TARGET_SERVER" > /dev/null

@@ -47,6 +47,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--trace", type=Path, help="Path to per-request trace CSV")
     parser.add_argument("--failure-time", type=float, default=None, help="Timestamp (s) when server failed")
+    parser.add_argument("--restart-time", type=float, default=None, help="Timestamp (s) when server restarts")
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -56,6 +57,7 @@ def main() -> None:
             args.trace,
             args.output_dir / f"{args.trace.stem}_timeline.png",
             failure_time=args.failure_time,
+            restart_time=args.restart_time,
         )
 
     if args.results and args.results.exists():
@@ -101,6 +103,7 @@ def plot_trace(
     trace_csv: Path,
     output: Path,
     failure_time = None,
+    restart_time = None,
     window: int = 25,
 ) -> None:
     ok_times, ok_latencies = [], []
@@ -133,6 +136,9 @@ def plot_trace(
 
     if failure_time is not None:
         ax.axvline(failure_time, color="tab:red", linestyle="--", linewidth=1.5, label=f"Server failure (t={failure_time:.1f}s)")
+
+    if restart_time is not None:
+        ax.axvline(restart_time, color="tab:red", linestyle="--", linewidth=1.5, label=f"Server restart (t={restart_time:.1f}s)")
 
     ax.set_xlabel("Time since benchmark start (s)")
     ax.set_ylabel("Latency (ms)")
