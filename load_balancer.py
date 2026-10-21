@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 from functools import partial
 import os
 import logging
@@ -239,44 +240,73 @@ async def client_handler(client_reader: asyncio.StreamReader, client_writer: asy
     client_writer.close()
 
 
-def probe_server(conn, host: str, port: int):
-    """Blocking health probe (run in a thread). Returns a live connection or None."""
-    if conn is not None:
-        try:
-            conn.ping(timeout=2)
-            return conn
-        except Exception:
-            try:
-                conn.close()
-            except Exception:
-                pass
+def ping_server(conn) -> bool:
+    """Blocking ping on an existing connection (run in a thread)."""
+    try:
+        conn.ping(timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+def connect_server(host: str, port: int):
+    """Blocking connect (run in a thread). Returns a connection or None.
+
+    Resolving the name of a dead container can take several seconds (Docker DNS),
+    so this must never run in the same place as the other servers' probes.
+    """
     try:
         return rpyc.connect(host, port)
     except Exception:
         return None
 
 
-async def server_monitoring():
-    rpc_conn = [None] * len(SERVERS)
+async def monitor_one_server(i: int):
+    """Health loop of a single backend. Each server has its own loop, so a slow
+    probe of a dead server never delays the status updates of the others."""
+    host, port = SERVERS[i][0], int(SERVERS[i][1])
+    conn = None
     while True:
         try:
-            results = await asyncio.gather(*[
-                asyncio.to_thread(probe_server, rpc_conn[i], SERVERS[i][0], int(SERVERS[i][1]))
-                for i in range(len(SERVERS))
-            ])
-            for i, conn in enumerate(results):
-                if conn is None and SERVER_UP[i]:
-                    logger.warning("server %s is DOWN", SERVERS[i][0])
-                elif conn is not None and not SERVER_UP[i]:
-                    logger.info("server %s is UP", SERVERS[i][0])
-                rpc_conn[i] = conn
-                SERVER_UP[i] = conn is not None
+            if conn is not None and not await asyncio.to_thread(ping_server, conn):
+                # Mark it down immediately, before any (slow) reconnection attempt
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = None
+                if SERVER_UP[i]:
+                    logger.warning("server %s is DOWN", host)
+                SERVER_UP[i] = False
+            if conn is None:
+                conn = await asyncio.to_thread(connect_server, host, port)
+                if conn is not None:
+                    if not SERVER_UP[i]:
+                        logger.info("server %s is UP", host)
+                    SERVER_UP[i] = True
+                elif SERVER_UP[i]:
+                    logger.warning("server %s is DOWN", host)
+                    SERVER_UP[i] = False
+            elif not SERVER_UP[i]:
+                # A request failed earlier but the server still answers pings
+                logger.info("server %s is UP", host)
+                SERVER_UP[i] = True
         except Exception as e:
-            logger.error("monitor error: %s", e)
+            logger.error("monitor error for %s: %s", host, e)
         await asyncio.sleep(1)
 
 
+async def server_monitoring():
+    await asyncio.gather(*[monitor_one_server(i) for i in range(len(SERVERS))])
+
+
 async def main():
+    # Name resolution (getaddrinfo) and health probes run in threads. A dead
+    # container can block a lookup for several seconds, so the default pool
+    # (about 16 threads) would be exhausted and healthy servers would time out.
+    asyncio.get_running_loop().set_default_executor(
+        concurrent.futures.ThreadPoolExecutor(max_workers=512)
+    )
     port = os.getenv("BIND_PORT", "7777")
     sm = asyncio.create_task(server_monitoring())
     algorithm = os.getenv("LB_ALGORITHM", "least_connections")
