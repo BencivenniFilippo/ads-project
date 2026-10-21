@@ -56,27 +56,25 @@ def update_server_ewma(server_index: int, elapsed: float) -> None:
         )
 
 
-# Uses the least connections or weighted least connections methods
+# Picks a backend among the servers currently marked UP.
+# Raises ValueError when no server is available.
 def choose_server(algorithm: str = "least_connections") -> tuple[str, int, int]:
+    up = [i for i in range(len(SERVERS)) if SERVER_UP[i]]
+    if not up:
+        raise ValueError("no server available")
 
     if algorithm == "least_response_time":
-        for index, elapsed in enumerate(SERVER_TIMES):
-            if elapsed is None:
-                server = SERVERS[index]
-                return server[0], int(server[1]), index
-
-        index = min(range(len(SERVER_TIMES)), key=SERVER_TIMES.__getitem__) # Extract index of min value in SERVER_TIMES
-        server = SERVERS[index]
-        return server[0], int(server[1]), index
-
+        # Servers without any measurement yet are tried first
+        untested = [i for i in up if SERVER_TIMES[i] is None]
+        if untested:
+            index = untested[0]
+        else:
+            index = min(up, key=lambda i: SERVER_TIMES[i])
     elif algorithm == "weighted_least_connections":
-        connections = [c/w for c,w in zip(SERVER_CONNECTIONS, SERVER_WEIGHTS)]
+        index = min(up, key=lambda i: SERVER_CONNECTIONS[i] / SERVER_WEIGHTS[i])
+    else:
+        index = min(up, key=lambda i: SERVER_CONNECTIONS[i])
 
-    elif algorithm == "least_connections":
-        connections = SERVER_CONNECTIONS
-
-    available_connections = [x for i,x in enumerate(connections) if SERVER_UP[i]]
-    index = connections.index(min(available_connections))
     server = SERVERS[index]
     return server[0], int(server[1]), index
 
@@ -155,7 +153,10 @@ async def client_handler(client_reader: asyncio.StreamReader, client_writer: asy
             SERVER_CONNECTIONS[server_index] += 1
 
             start = time.perf_counter()
-            server_reader, server_writer = await asyncio.open_connection(server_host, server_port)
+            # Short timeout: a dead container can leave the TCP connect hanging for ~30 s
+            server_reader, server_writer = await asyncio.wait_for(
+                asyncio.open_connection(server_host, server_port), timeout=1.0
+            )
 
             client_to_server = asyncio.create_task(
                 buffering_pipe(client_reader, server_writer, client_buffer)
@@ -196,6 +197,7 @@ async def client_handler(client_reader: asyncio.StreamReader, client_writer: asy
 
             # Request completed cleanly
             elapsed = time.perf_counter() - start
+            transaction_succeeded = True
             SERVER_HANDLED[server_index] += 1
             TOTAL_TRANSACTIONS += 1
             if TOTAL_TRANSACTIONS % SUMMARY_INTERVAL == 0:
@@ -237,37 +239,41 @@ async def client_handler(client_reader: asyncio.StreamReader, client_writer: asy
     client_writer.close()
 
 
-async def server_monitoring():
-    try:
-        rpc_conn = [None] * len(SERVERS)
-        while True:
-            for i,conn in enumerate(rpc_conn):
-                if conn is None:
-                    try:
-                        new_conn = rpyc.connect(SERVERS[i][0], int(SERVERS[i][1]))
-                        rpc_conn[i] = new_conn
-                        SERVER_UP[i] = True
-                    except Exception as e:
-                        logger.error(e)
-                        SERVER_UP[i] = False
-                else:
-                    try:
-                        conn.ping()
-                        SERVER_UP[i] = True
-                    except rpyc.core.protocol.PingError as e:
-                        logger.error(e)
-                        SERVER_UP[i] = False
-                    except EOFError as e:
-                        logger.error(e)
-                        SERVER_UP[i] = False
-                        rpc_conn[i] = None
-            await asyncio.sleep(1)
-    except asyncio.CancelledError as e:
-        logger.error(e)
-        for conn in rpc_conn:
-            if conn is not None:
+def probe_server(conn, host: str, port: int):
+    """Blocking health probe (run in a thread). Returns a live connection or None."""
+    if conn is not None:
+        try:
+            conn.ping(timeout=2)
+            return conn
+        except Exception:
+            try:
                 conn.close()
+            except Exception:
+                pass
+    try:
+        return rpyc.connect(host, port)
+    except Exception:
+        return None
 
+
+async def server_monitoring():
+    rpc_conn = [None] * len(SERVERS)
+    while True:
+        try:
+            results = await asyncio.gather(*[
+                asyncio.to_thread(probe_server, rpc_conn[i], SERVERS[i][0], int(SERVERS[i][1]))
+                for i in range(len(SERVERS))
+            ])
+            for i, conn in enumerate(results):
+                if conn is None and SERVER_UP[i]:
+                    logger.warning("server %s is DOWN", SERVERS[i][0])
+                elif conn is not None and not SERVER_UP[i]:
+                    logger.info("server %s is UP", SERVERS[i][0])
+                rpc_conn[i] = conn
+                SERVER_UP[i] = conn is not None
+        except Exception as e:
+            logger.error("monitor error: %s", e)
+        await asyncio.sleep(1)
 
 
 async def main():

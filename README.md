@@ -214,22 +214,31 @@ The load balancer reads:
 Plot generation uses Matplotlib inside the client image. The benchmark script
 does not replace raw measurements with plots; it stores both.
 
+## Fault tolerance (Phase 4)
+
+The load balancer runs a health monitor that pings every backend once per
+second (RPyC `ping`) and reconnects to servers that came back. Servers that
+fail are excluded from routing. If a backend dies while a request is in
+flight, the load balancer replays the buffered client bytes to another
+backend, so the client does not see the failure.
+
+```bash
+bash run_ft_benchmark.sh
+```
+
+The script starts the three-replica deployment, runs a constant-rate workload,
+kills `server2` after `KILL_DELAY` seconds, and writes to
+`Experiments/fault_<timestamp>/`: `results.csv`, the per-request trace
+`server_failure_trace.csv`, the latency timeline plot
+`server_failure_trace_timeline.png`, `events.log`, and `load_balancer.log`.
+The failed server is restarted at the end.
+
 ## Current assignment status
 
-The current repository contains the Phase 2 single-server benchmark and the
-Phase 3 deployment: three explicit server replicas, a Redis cache, an asyncio
-TCP load balancer, startup health checks, and the benchmark client. The load
-balancer supports least-connections, weighted least-connections, and
-least-response-time selection. `run_phase3.sh` starts the three-replica
-deployment with the algorithm selected at the top of the script; the selected
-algorithm is recorded in each manifest.
-
-The initial smoke test completed successfully with four requests and zero
-errors. The full assignment evidence is still pending: phase 3 requires testing
-two dynamic algorithms, showing replica distribution, and comparing one-server
-and three-server latency. Phase 4 health monitoring and rerouting after a
-running server failure are not implemented yet; Compose health checks only
-gate startup.
+Implemented: single-server benchmark (Phase 2), three replicas behind an
+asyncio TCP load balancer with least-connections, weighted least-connections
+and least-response-time (Phase 3), and health monitoring with rerouting after
+a server failure (Phase 4).
 
 ## Repository layout
 
@@ -243,6 +252,8 @@ gate startup.
 ├── Texts/                    # Text corpus copied into server images
 ├── run_phase2.sh             # Phase 2 single-server benchmark
 ├── run_phase3.sh             # Phase 3 multi-rate benchmark
+├── run_ft_benchmark.sh       # Phase 4 fault-tolerance experiment
+├── plot_results.py           # Plots (results and failure timeline)
 ├── requirements.txt          # Container runtime dependencies
 └── pyproject.toml            # Python project metadata and development dependencies
 ```

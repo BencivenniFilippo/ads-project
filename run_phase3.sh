@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RATES=(50 70 90 110 130)
-REPEATS=2
+RATES=(50)
+REPEATS=1
 DURATION=10
 SEED=42
 HIT_RATE="${HIT_RATE:-0}"

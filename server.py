@@ -48,11 +48,11 @@ class WordCountService(rpyc.Service):
 
         if raw_value is not None:
             cache_hits += 1
-            logger.debug("Retrieved from Redis: " + str(raw_value))
+            logger.info("cache_status=hit file=%s word=%s", file, word)
             count = int(raw_value)
         else:
             cache_misses += 1
-            logger.debug("No value found in Redis")
+            logger.info("cache_status=miss file=%s word=%s", file, word)
 
             filepath = os.path.join(os.path.dirname(__file__), "Texts", file)
             count = word_count(filepath, word)
